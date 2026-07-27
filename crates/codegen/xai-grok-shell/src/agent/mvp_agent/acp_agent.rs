@@ -121,6 +121,11 @@ fn resolve_switch_window(
         })?;
     Ok(SwitchContextWindow::Set(Some(window)))
 }
+fn prompt_capabilities() -> acp::PromptCapabilities {
+    acp::PromptCapabilities::new()
+        .image(true)
+        .embedded_context(true)
+}
 #[async_trait::async_trait(?Send)]
 impl acp::Agent for MvpAgent {
     /// The response meta carries `model_state` so the client can display the available models and the default model. SINGLE-CALL INVARIANT: this method is the sole writer of `self.auth_method_id` during initialization.
@@ -584,7 +589,7 @@ impl acp::Agent for MvpAgent {
                                 .cloned(),
                         )
                         .prompt_capabilities(
-                            acp::PromptCapabilities::new().embedded_context(true),
+                            prompt_capabilities(),
                         )
                         .mcp_capabilities(
                             acp::McpCapabilities::new().http(true).sse(true),
@@ -2716,7 +2721,8 @@ impl acp::Agent for MvpAgent {
 }
 #[cfg(test)]
 mod tool_overrides_capability_tests {
-    use super::tool_overrides_capability;
+    use super::{prompt_capabilities, tool_overrides_capability};
+
     #[test]
     fn capability_wire_shape_is_pinned() {
         assert_eq!(
@@ -2726,6 +2732,18 @@ mod tool_overrides_capability_tests {
                 "x_semantic_search": true,
                 "x_user_search": false,
                 "x_thread_fetch": false,
+            }),
+        );
+    }
+
+    #[test]
+    fn prompt_capabilities_advertise_supported_image_input() {
+        assert_eq!(
+            serde_json::to_value(prompt_capabilities()).unwrap(),
+            serde_json::json!({
+                "image": true,
+                "audio": false,
+                "embeddedContext": true,
             }),
         );
     }
