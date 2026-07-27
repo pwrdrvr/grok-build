@@ -59,7 +59,14 @@ rustflags = [
 ]
 
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
+rustflags = [
+    "-C", "force-unwind-tables=yes",
+    "-C", "target-feature=+crt-static",
+    # MSVC 19.44 can exhaust PDB limits on very large legacy Rust symbols
+    # (rust-lang/rust#141626). v0 mangling keeps the shipped binary debuggable
+    # while avoiding the linker crash.
+    "-C", "symbol-mangling-version=v0",
+]
 
 [target.aarch64-pc-windows-msvc]
 rustflags = ["-C", "force-unwind-tables=yes", "-C", "target-feature=+crt-static"]
