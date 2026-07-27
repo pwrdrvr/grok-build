@@ -231,7 +231,7 @@ jobs:
             raw/raw-macos-x86_64/grok \
             -output stage/grok
           chmod 0755 stage/grok
-          lipo -verify_arch arm64 x86_64 stage/grok
+          lipo stage/grok -verify_arch arm64 x86_64
           cp \
             raw/raw-macos-aarch64/LICENSE \
             raw/raw-macos-aarch64/THIRD-PARTY-NOTICES \
