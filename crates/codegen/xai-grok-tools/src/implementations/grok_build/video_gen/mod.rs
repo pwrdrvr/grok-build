@@ -223,7 +223,7 @@ impl VideoGenClient {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = xai_grok_extra_ca::with_extra_root_certificates(
+        let client = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder().default_headers(self.http_headers.clone()),
         )
         .build()
@@ -241,7 +241,7 @@ impl VideoGenClient {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = xai_grok_extra_ca::with_extra_root_certificates(
+        let client = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS)),
         )
@@ -1216,6 +1216,45 @@ impl xai_tool_runtime::Tool for ReferenceToVideoTool {
 mod tests {
     use super::*;
     use crate::types::tool_metadata::test_ctx_with_call_id;
+
+    #[tokio::test]
+    async fn presigned_download_does_not_send_api_credentials_or_extra_headers() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/video.mp4"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"video"))
+            .mount(&server)
+            .await;
+
+        let config = VideoGenConfig::Enabled {
+            api_key: "must-not-leak".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::indexmap! {
+                "x-grok-session-id".into() => "must-not-leak".into(),
+            },
+            zdr_video_output_s3: None,
+            tier_restricted: false,
+        };
+        let client = VideoGenClient::new(&config, None).expect("video client should build");
+        assert_eq!(
+            client
+                .download_video(&format!("{}/video.mp4", server.uri()))
+                .await
+                .expect("download should succeed"),
+            b"video"
+        );
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request recording enabled");
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].headers.get(AUTHORIZATION).is_none());
+        assert!(requests[0].headers.get("x-grok-session-id").is_none());
+    }
 
     #[test]
     fn image_to_video_name_and_description() {
