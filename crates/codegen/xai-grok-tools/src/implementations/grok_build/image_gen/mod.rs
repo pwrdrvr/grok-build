@@ -51,7 +51,8 @@ pub(crate) const TIER_RESTRICTED_UPSELL: &str = "Image generation is a SuperGrok
 /// HTTP client for xAI Imagine API. Cloned per-request; shares `Arc` state.
 #[derive(Clone)]
 pub struct ImageGenClient {
-    http: reqwest::Client,
+    http: std::sync::Arc<parking_lot::Mutex<Option<reqwest::Client>>>,
+    http_headers: reqwest::header::HeaderMap,
     base_url: String,
     /// Imagine model slug used by `generate()`. Selected at construction
     /// from `ImageGenConfig::model_override` (falling back to
@@ -129,21 +130,9 @@ impl ImageGenClient {
             Ok::<(), xai_tool_runtime::ToolError>(())
         })?;
 
-        let http = xai_grok_extra_ca::with_extra_root_certificates(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
-                .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
-                .default_headers(headers),
-        )
-        .build()
-        .map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to build HTTP client: {e}"
-            ))
-        })?;
-
         Ok(Self {
-            http,
+            http: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            http_headers: headers,
             base_url: base_url.clone(),
             model,
             edit_model,
@@ -184,8 +173,25 @@ impl ImageGenClient {
         &self.base_url
     }
 
-    pub(crate) fn http(&self) -> &reqwest::Client {
-        &self.http
+    pub(crate) fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+        let mut slot = self.http.lock();
+        if let Some(client) = slot.as_ref() {
+            return Ok(client.clone());
+        }
+        let client = xai_grok_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
+                .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
+                .default_headers(self.http_headers.clone()),
+        )
+        .build()
+        .map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to build HTTP client: {e}"
+            ))
+        })?;
+        *slot = Some(client.clone());
+        Ok(client)
     }
 
     pub(crate) fn writer(&self) -> &super::storage::SessionFileWriter {
@@ -216,7 +222,7 @@ impl ImageGenClient {
         // emit see the same value (even if the provider rotates between
         // the send and the response handling).
         let sent_bearer = self.current_bearer().await;
-        let mut req = self.http.post(&url).json(&payload);
+        let mut req = self.http()?.post(&url).json(&payload);
         if let Some(ref key) = sent_bearer {
             req = req.header(AUTHORIZATION, format!("Bearer {key}"));
         }
@@ -573,10 +579,20 @@ mod tests {
             tier_restricted: false,
         };
         // No override → default quality model.
-        assert_eq!(
-            ImageGenClient::new(&mk(None), None).unwrap().model,
-            XAI_IMAGINE_MODEL
+        let default_client = ImageGenClient::new(&mk(None), None).unwrap();
+        assert_eq!(default_client.model, XAI_IMAGINE_MODEL);
+        assert!(
+            default_client.http.lock().is_none(),
+            "HTTP setup must stay lazy"
         );
+        default_client
+            .http()
+            .expect("first-use HTTP setup should succeed");
+        assert!(default_client.http.lock().is_some());
+        default_client
+            .http()
+            .expect("cached HTTP setup should succeed");
+        assert!(default_client.http.lock().is_some());
         // Empty override → treated as no override.
         assert_eq!(
             ImageGenClient::new(&mk(Some("")), None).unwrap().model,
@@ -616,6 +632,26 @@ mod tests {
         let client = ImageGenClient::new(&mk(Some("grok-imagine-image-v2")), None).unwrap();
         assert_eq!(client.edit_model(), "grok-imagine-image-v2");
         assert_eq!(client.model, XAI_IMAGINE_MODEL);
+    }
+
+    #[test]
+    fn invalid_headers_are_rejected_before_http_setup() {
+        let mut extra_headers = indexmap::IndexMap::new();
+        extra_headers.insert("invalid header name".to_string(), "value".to_string());
+        let config = ImageGenConfig::Enabled {
+            api_key: "k".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers,
+            image_gen_enabled: true,
+            image_edit_enabled: true,
+            model_override: None,
+            edit_model_override: None,
+            tier_restricted: false,
+        };
+        let err = ImageGenClient::new(&config, None)
+            .err()
+            .expect("invalid headers must fail eagerly");
+        assert!(err.to_string().contains("Invalid header name"));
     }
 
     #[tokio::test]

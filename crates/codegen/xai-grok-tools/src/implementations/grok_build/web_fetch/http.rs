@@ -28,20 +28,22 @@ pub(crate) struct HttpClient {
 
 impl HttpClient {
     pub(crate) fn new(params: &WebFetchParams) -> Result<Self, WebFetchError> {
-        let client = Self::build(params)?;
+        // Keep proxy configuration validation eager while deferring the
+        // comparatively expensive TLS/client construction.
+        let _ = Self::proxy(params)?;
         Ok(Self {
-            inner: Arc::new(ArcSwapOption::from(Some(Arc::new(client)))),
+            inner: Arc::new(ArcSwapOption::empty()),
             params: params.clone(),
         })
     }
 
-    /// Get the current client, rebuilding if it was invalidated.
+    /// Get the current client, building it on first use or after invalidation.
     pub(crate) fn get_or_rebuild(&self) -> Result<Arc<reqwest::Client>, WebFetchError> {
         // Fast path: lock-free atomic load.
         if let Some(client) = self.inner.load_full() {
             return Ok(client);
         }
-        // Client was invalidated — rebuild with a fresh connection pool.
+        // Client is uninitialized or was invalidated — build a fresh pool.
         let fresh = Arc::new(Self::build(&self.params)?);
         self.inner.store(Some(Arc::clone(&fresh)));
         Ok(fresh)
@@ -70,13 +72,20 @@ impl HttpClient {
         );
 
         // Route all traffic through the egress proxy when configured.
-        if let Some(ref endpoint) = params.proxy_endpoint {
-            let proxy = reqwest::Proxy::all(endpoint)
-                .map_err(|e| WebFetchError::ProxyConfigError(e.to_string()))?;
+        if let Some(proxy) = Self::proxy(params)? {
             builder = builder.proxy(proxy);
         }
 
         builder.build().map_err(WebFetchError::ClientBuildError)
+    }
+
+    fn proxy(params: &WebFetchParams) -> Result<Option<reqwest::Proxy>, WebFetchError> {
+        params
+            .proxy_endpoint
+            .as_deref()
+            .map(reqwest::Proxy::all)
+            .transpose()
+            .map_err(|e| WebFetchError::ProxyConfigError(e.to_string()))
     }
 }
 
@@ -87,8 +96,11 @@ mod tests {
     #[test]
     fn get_or_rebuild_returns_client() {
         let client = HttpClient::new(&WebFetchParams::default()).unwrap();
+        assert!(client.inner.load_full().is_none());
         let http = client.get_or_rebuild().unwrap();
         assert!(Arc::strong_count(&http) >= 1);
+        let cached = client.inner.load_full().expect("client should be cached");
+        assert!(Arc::ptr_eq(&http, &cached));
     }
 
     #[test]
@@ -113,16 +125,18 @@ mod tests {
             ..Default::default()
         };
         // Should succeed — reqwest accepts the proxy URL.
-        let client = HttpClient::new(&params);
-        assert!(client.is_ok());
+        let client = HttpClient::new(&params).unwrap();
+        assert!(client.inner.load_full().is_none());
+        assert!(client.get_or_rebuild().is_ok());
     }
 
     #[test]
     fn build_without_proxy_is_default() {
         let params = WebFetchParams::default();
         assert!(params.proxy_endpoint.is_none());
-        let client = HttpClient::new(&params);
-        assert!(client.is_ok());
+        let client = HttpClient::new(&params).unwrap();
+        assert!(client.inner.load_full().is_none());
+        assert!(client.get_or_rebuild().is_ok());
     }
 
     #[test]

@@ -376,7 +376,7 @@ impl xai_tool_runtime::Tool for ImageEditTool {
         }
 
         let sent_bearer = client.current_bearer().await;
-        let mut req = client.http().post(&url).json(&payload);
+        let mut req = client.http()?.post(&url).json(&payload);
         if let Some(ref key) = sent_bearer {
             req = req.header(AUTHORIZATION, format!("Bearer {key}"));
         }
