@@ -3,11 +3,13 @@ use crate::attribution::{SharedAttributionCallback, ToolConsumer};
 use crate::types::SharedApiKeyProvider;
 use async_openai::types::responses as rs;
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use std::sync::Arc;
 /// A minimal, purpose-built HTTP client for calling the Responses API
 /// with web search capability.
 #[derive(Clone)]
 pub struct WebSearchClient {
-    http: reqwest::Client,
+    http: Arc<parking_lot::Mutex<Option<reqwest::Client>>>,
+    http_headers: HeaderMap,
     base_url: String,
     model: String,
     /// Authoritative domain allowlist from `[toolset.web_search] allowed_domains`.
@@ -75,8 +77,24 @@ impl WebSearchClient {
             headers.insert(header_name, header_value);
         }
         let _ = alpha_test_key;
-        let http = xai_grok_extra_ca::with_extra_root_certificates(
-            reqwest::Client::builder().default_headers(headers),
+        Ok(Self {
+            http: Arc::new(parking_lot::Mutex::new(None)),
+            http_headers: headers,
+            base_url: base_url.clone(),
+            model: model.clone(),
+            default_allowed_domains: allowed_domains.clone(),
+            default_excluded_domains: excluded_domains.clone(),
+            api_key_provider,
+            attribution_callback: None,
+        })
+    }
+    fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+        let mut slot = self.http.lock();
+        if let Some(client) = slot.as_ref() {
+            return Ok(client.clone());
+        }
+        let client = xai_grok_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder().default_headers(self.http_headers.clone()),
         )
         .build()
         .map_err(|e| {
@@ -85,15 +103,8 @@ impl WebSearchClient {
                 format!("Failed to build HTTP client: {e}"),
             )
         })?;
-        Ok(Self {
-            http,
-            base_url: base_url.clone(),
-            model: model.clone(),
-            default_allowed_domains: allowed_domains.clone(),
-            default_excluded_domains: excluded_domains.clone(),
-            api_key_provider,
-            attribution_callback: None,
-        })
+        *slot = Some(client.clone());
+        Ok(client)
     }
     /// Resolve the effective domain filters for a request.
     ///
@@ -210,7 +221,7 @@ impl WebSearchClient {
         let request = self.build_request_json(query, allowed, excluded)?;
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
         let sent_bearer = self.current_bearer().await;
-        let mut req = self.http.post(&url).json(&request);
+        let mut req = self.http()?.post(&url).json(&request);
         if let Some(ref key) = sent_bearer {
             req = req.header(AUTHORIZATION, format!("Bearer {key}"));
         }
@@ -279,7 +290,7 @@ impl WebSearchClient {
         let request = self.build_request_json(query, allowed, excluded)?;
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
         let sent_bearer = self.current_bearer().await;
-        let mut req = self.http.post(&url).json(&request);
+        let mut req = self.http()?.post(&url).json(&request);
         if let Some(ref key) = sent_bearer {
             req = req.header(AUTHORIZATION, format!("Bearer {key}"));
         }
@@ -494,6 +505,29 @@ mod tests {
         };
         let client = WebSearchClient::new(&config, None).expect("client should build");
         assert_eq!(client.model, "custom-enterprise-model");
+        assert!(client.http.lock().is_none(), "HTTP setup must stay lazy");
+        client.http().expect("first-use HTTP setup should succeed");
+        assert!(client.http.lock().is_some());
+        client.http().expect("cached HTTP setup should succeed");
+        assert!(client.http.lock().is_some());
+    }
+    #[test]
+    fn invalid_headers_are_rejected_before_http_setup() {
+        let mut extra_headers = IndexMap::new();
+        extra_headers.insert("invalid header name".to_string(), "value".to_string());
+        let config = WebSearchConfig::Enabled {
+            api_key: "test-key".to_string(),
+            base_url: "https://api.x.ai/v1".to_string(),
+            model: "test-model".to_string(),
+            extra_headers,
+            alpha_test_key: None,
+            allowed_domains: None,
+            excluded_domains: None,
+        };
+        let err = WebSearchClient::new(&config, None)
+            .err()
+            .expect("invalid headers must fail eagerly");
+        assert!(err.to_string().contains("Invalid header name"));
     }
     /// Counts attribution callback invocations for the test below.
     #[derive(Default, Debug)]

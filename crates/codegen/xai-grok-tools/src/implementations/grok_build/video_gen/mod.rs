@@ -140,8 +140,9 @@ impl std::fmt::Debug for ZdrVideoOutputS3Config {
 /// HTTP client for xAI Video Generation API. Cloned per-request; shares `Arc` state.
 #[derive(Clone)]
 pub struct VideoGenClient {
-    http: reqwest::Client,
-    download_http: reqwest::Client,
+    http: std::sync::Arc<parking_lot::Mutex<Option<reqwest::Client>>>,
+    download_http: std::sync::Arc<parking_lot::Mutex<Option<reqwest::Client>>>,
+    http_headers: reqwest::header::HeaderMap,
     base_url: String,
     writer: super::storage::SessionFileWriter,
     zdr_video_output_s3: Option<ZdrVideoOutputS3Config>,
@@ -207,30 +208,10 @@ impl VideoGenClient {
             Ok::<(), xai_tool_runtime::ToolError>(())
         })?;
 
-        let http = xai_grok_extra_ca::with_extra_root_certificates(
-            reqwest::Client::builder().default_headers(headers),
-        )
-        .build()
-        .map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to build HTTP client: {e}"
-            ))
-        })?;
-
-        let download_http = xai_grok_extra_ca::with_extra_root_certificates(
-            reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS)),
-        )
-        .build()
-        .map_err(|e| {
-            xai_tool_runtime::ToolError::invalid_arguments(format!(
-                "Failed to build download client: {e}"
-            ))
-        })?;
-
         Ok(Self {
-            http,
-            download_http,
+            http: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            download_http: std::sync::Arc::new(parking_lot::Mutex::new(None)),
+            http_headers: headers,
             base_url: base_url.clone(),
             writer: super::storage::SessionFileWriter::new(DEFAULT_VIDEO_DIR, "mp4"),
             zdr_video_output_s3: zdr_video_output_s3
@@ -242,6 +223,43 @@ impl VideoGenClient {
             tier_restricted: *tier_restricted,
             zdr_restricted: *zdr_restricted,
         })
+    }
+
+    fn http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+        let mut slot = self.http.lock();
+        if let Some(client) = slot.as_ref() {
+            return Ok(client.clone());
+        }
+        let client = xai_grok_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder().default_headers(self.http_headers.clone()),
+        )
+        .build()
+        .map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to build HTTP client: {e}"
+            ))
+        })?;
+        *slot = Some(client.clone());
+        Ok(client)
+    }
+
+    fn download_http(&self) -> Result<reqwest::Client, xai_tool_runtime::ToolError> {
+        let mut slot = self.download_http.lock();
+        if let Some(client) = slot.as_ref() {
+            return Ok(client.clone());
+        }
+        let client = xai_grok_extra_ca::with_extra_root_certificates(
+            reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(VIDEO_DOWNLOAD_TIMEOUT_SECS)),
+        )
+        .build()
+        .map_err(|e| {
+            xai_tool_runtime::ToolError::invalid_arguments(format!(
+                "Failed to build download client: {e}"
+            ))
+        })?;
+        *slot = Some(client.clone());
+        Ok(client)
     }
 
     /// Whether the current user's tier (free / X Basic) is zero-limited on
@@ -314,7 +332,7 @@ impl VideoGenClient {
 
         let sent_bearer = self.current_bearer().await;
         let mut req = self
-            .http
+            .http()?
             .post(&start_url)
             .timeout(std::time::Duration::from_secs(VIDEO_START_TIMEOUT_SECS))
             .json(&payload);
@@ -388,7 +406,7 @@ impl VideoGenClient {
             }
 
             let poll_sent_bearer = self.current_bearer().await;
-            let mut poll_req = self.http.get(&poll_url).timeout(poll_timeout);
+            let mut poll_req = self.http()?.get(&poll_url).timeout(poll_timeout);
             if let Some(ref key) = poll_sent_bearer {
                 poll_req = poll_req.header(AUTHORIZATION, format!("Bearer {key}"));
             }
@@ -478,7 +496,7 @@ impl VideoGenClient {
 
     /// Download video bytes from a pre-signed temporary URL (no auth headers).
     async fn download_video(&self, url: &str) -> Result<Vec<u8>, xai_tool_runtime::ToolError> {
-        let response = self.download_http.get(url).send().await.map_err(|e| {
+        let response = self.download_http()?.get(url).send().await.map_err(|e| {
             xai_tool_runtime::ToolError::invalid_arguments(format!("Failed to download video: {e}"))
         })?;
 
@@ -1301,6 +1319,53 @@ mod tests {
         assert!(desc.contains("reference images and/or preset voices"));
         assert!(desc.contains("reference_to_video"));
         assert!(desc.contains("<AUDIO_0>"));
+    }
+
+    #[test]
+    fn client_defers_and_separately_caches_http_setup() {
+        let config = VideoGenConfig::Enabled {
+            api_key: "test-key".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers: indexmap::IndexMap::new(),
+            zdr_video_output_s3: None,
+            tier_restricted: false,
+            zdr_restricted: false,
+        };
+        let client = VideoGenClient::new(&config, None).expect("client config should be valid");
+        assert!(client.http.lock().is_none());
+        assert!(client.download_http.lock().is_none());
+        assert!(!std::sync::Arc::ptr_eq(&client.http, &client.download_http));
+
+        client.http().expect("first-use API client should build");
+        assert!(client.http.lock().is_some());
+        assert!(client.download_http.lock().is_none());
+
+        client
+            .download_http()
+            .expect("first-use download client should build");
+        assert!(client.download_http.lock().is_some());
+        client.http().expect("cached API client should succeed");
+        client
+            .download_http()
+            .expect("cached download client should succeed");
+    }
+
+    #[test]
+    fn invalid_headers_are_rejected_before_http_setup() {
+        let mut extra_headers = indexmap::IndexMap::new();
+        extra_headers.insert("invalid header name".to_string(), "value".to_string());
+        let config = VideoGenConfig::Enabled {
+            api_key: "test-key".into(),
+            base_url: "https://api.x.ai/v1".into(),
+            extra_headers,
+            zdr_video_output_s3: None,
+            tier_restricted: false,
+            zdr_restricted: false,
+        };
+        let err = VideoGenClient::new(&config, None)
+            .err()
+            .expect("invalid headers must fail eagerly");
+        assert!(err.to_string().contains("Invalid header name"));
     }
 
     #[test]
