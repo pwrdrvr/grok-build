@@ -54,7 +54,7 @@ impl HttpClient {
     }
 
     fn build(params: &WebFetchParams) -> Result<reqwest::Client, WebFetchError> {
-        let mut builder = xai_grok_extra_ca::with_extra_root_certificates(
+        let mut builder = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder()
                 .timeout(params.timeout_secs())
                 .connect_timeout(std::time::Duration::from_secs(10))

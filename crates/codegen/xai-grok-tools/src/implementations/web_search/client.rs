@@ -64,7 +64,7 @@ impl WebSearchClient {
             headers.insert(header_name, header_value);
         }
         let _ = alpha_test_key;
-        let http = xai_grok_extra_ca::with_extra_root_certificates(
+        let http = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder().default_headers(headers),
         )
         .build()
