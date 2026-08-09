@@ -13515,6 +13515,7 @@ version = "0.1.0"
 dependencies = [
  "reqwest 0.12.24",
  "rustls",
+ "rustls-native-certs",
  "tempfile",
  "tracing",
 ]

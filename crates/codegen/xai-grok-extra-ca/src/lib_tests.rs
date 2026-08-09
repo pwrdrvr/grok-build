@@ -110,6 +110,57 @@ fn validated_ders_build_reqwest_client() {
 }
 
 #[test]
+fn cached_native_roots_are_loaded_once() {
+    let first = native_root_ders().as_ptr();
+    let second = native_root_ders().as_ptr();
+    assert_eq!(first, second);
+    assert_eq!(
+        NATIVE_ROOT_LOADS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the operating-system trust store must be walked only once"
+    );
+}
+
+#[test]
+fn cached_root_adapter_builds_repeated_clients() {
+    let first = with_cached_root_certificates(reqwest::Client::builder())
+        .build()
+        .expect("first client with cached roots");
+    let second = with_cached_root_certificates(reqwest::Client::builder())
+        .build()
+        .expect("second client with cached roots");
+
+    drop((first, second));
+}
+
+#[test]
+fn native_root_validation_keeps_valid_and_skips_invalid_der() {
+    let valid = parse_and_validate_pem(VALID_CERT_1.as_bytes())
+        .accepted
+        .pop()
+        .expect("valid fixture DER");
+    let certs = vec![
+        CertificateDer::from(valid),
+        CertificateDer::from(vec![0xff]),
+    ];
+
+    let (accepted, rejected) = validate_native_root_ders(certs);
+
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(rejected, 1);
+}
+
+#[test]
+fn native_root_cache_kill_switch_values() {
+    assert!(cache_disabled_value(Some("0")));
+    assert!(cache_disabled_value(Some("false")));
+    assert!(cache_disabled_value(Some("FALSE")));
+    assert!(!cache_disabled_value(Some("1")));
+    assert!(!cache_disabled_value(Some("true")));
+    assert!(!cache_disabled_value(None::<&str>));
+}
+
+#[test]
 fn read_bundle_capped_rejects_oversized() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("huge.pem");
