@@ -93,7 +93,7 @@ impl WebSearchClient {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = xai_grok_extra_ca::with_extra_root_certificates(
+        let client = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder().default_headers(self.http_headers.clone()),
         )
         .build()
