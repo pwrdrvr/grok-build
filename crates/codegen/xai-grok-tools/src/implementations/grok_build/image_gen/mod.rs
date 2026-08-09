@@ -178,7 +178,7 @@ impl ImageGenClient {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = xai_grok_extra_ca::with_extra_root_certificates(
+        let client = xai_grok_extra_ca::with_cached_root_certificates(
             reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(IMAGE_GEN_TIMEOUT_SECS))
                 .read_timeout(std::time::Duration::from_secs(IMAGE_GEN_READ_TIMEOUT_SECS))
