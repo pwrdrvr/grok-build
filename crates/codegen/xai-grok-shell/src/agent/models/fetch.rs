@@ -38,7 +38,7 @@ pub(crate) fn prefetch_models_blocking(
     )
 }
 
-/// Blocking models + `/v1/settings` prefetch pair, shared by the early
+/// Blocking models + `/v1/settings` prefetch pair, shared by the early startup path.
 pub(crate) fn prefetch_models_and_settings_blocking(
     endpoints: &config::EndpointsConfig,
     auth: Option<&GrokAuth>,
@@ -48,23 +48,40 @@ pub(crate) fn prefetch_models_and_settings_blocking(
     Option<crate::util::config::RemoteSettings>,
 ) {
     let remote_fetch_enabled = crate::util::config::resolve_remote_fetch_enabled();
-    let models = {
+    let fetch_models = || {
         let _timer = crate::instrumentation_timer!("startup.early_models_fetch");
         prefetch_models_blocking_gated(endpoints, auth, fetch_auth, remote_fetch_enabled)
     };
-    let settings = match auth {
+    match auth {
         Some(auth) if remote_fetch_enabled => {
-            let _timer = crate::instrumentation_timer!("startup.early_settings_fetch");
-            crate::remote::fetch_settings_blocking(
-                &endpoints.proxy_url(),
-                auth,
-                endpoints.alpha_test_key.as_deref(),
-            )
-            .into_option()
+            run_blocking_prefetches_in_parallel(fetch_models, || {
+                let _timer = crate::instrumentation_timer!("startup.early_settings_fetch");
+                crate::remote::fetch_settings_blocking(
+                    &endpoints.proxy_url(),
+                    auth,
+                    endpoints.alpha_test_key.as_deref(),
+                )
+                .into_option()
+            })
         }
-        _ => None,
-    };
-    (models, settings)
+        _ => (fetch_models(), None),
+    }
+}
+
+/// Run the independent model-catalog and remote-settings requests concurrently.
+fn run_blocking_prefetches_in_parallel<Models, Settings>(
+    fetch_models: impl FnOnce() -> Models,
+    fetch_settings: impl FnOnce() -> Settings + Send,
+) -> (Models, Settings)
+where
+    Settings: Send,
+{
+    std::thread::scope(|scope| {
+        let settings = scope.spawn(fetch_settings);
+        let models = fetch_models();
+        let settings = settings.join().expect("settings prefetch thread panicked");
+        (models, settings)
+    })
 }
 
 /// `remote_fetch_enabled` is a parameter so the pair helper above resolves the knob once for both halves.
@@ -252,4 +269,35 @@ fn spawn_managed_config_sync_if_stale(endpoints: &config::EndpointsConfig) {
             .await
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_blocking_prefetches_in_parallel;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn blocking_prefetch_pair_runs_concurrently() {
+        let (models_started_tx, models_started_rx) = mpsc::channel();
+        let (settings_started_tx, settings_started_rx) = mpsc::channel();
+
+        let (models_saw_settings, settings_saw_models) = run_blocking_prefetches_in_parallel(
+            move || {
+                models_started_tx.send(()).unwrap();
+                settings_started_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .is_ok()
+            },
+            move || {
+                settings_started_tx.send(()).unwrap();
+                models_started_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .is_ok()
+            },
+        );
+
+        assert!(models_saw_settings);
+        assert!(settings_saw_models);
+    }
 }
