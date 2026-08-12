@@ -505,13 +505,16 @@ impl SessionActor {
                         self.signals_handle().record_tool_success(&name);
                     }
                 }
-                let (title, _kind, _raw_input) = backend_tool_display(&name);
+                let (title, kind, raw_input) =
+                    backend_tool_completed_display(&name, result.as_ref());
                 self.send_update(
                     acp::SessionUpdate::ToolCallUpdate(acp::ToolCallUpdate::new(
                         acp::ToolCallId::new(Arc::from(call_id.as_str())),
                         acp::ToolCallUpdateFields::new()
                             .status(Some(status))
                             .title(Some(title))
+                            .kind(Some(kind))
+                            .raw_input(Some(raw_input))
                             .raw_output(result),
                     )),
                     None,

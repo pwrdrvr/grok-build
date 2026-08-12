@@ -129,6 +129,86 @@ pub(super) fn backend_tool_display(name: &str) -> (String, acp::ToolKind, serde_
     }
 }
 
+/// Give a completed hosted tool call a self-describing terminal update. Hosted
+/// tool starts do not include their arguments, so the result is the first
+/// opportunity to replace placeholder labels such as `Web search:` with the
+/// query, page URL, or X operation the user can actually recognize.
+pub(super) fn backend_tool_completed_display(
+    name: &str,
+    result: Option<&serde_json::Value>,
+) -> (String, acp::ToolKind, serde_json::Value) {
+    let (fallback_title, kind, mut raw_input) = backend_tool_display(name);
+    let Some(result) = result else {
+        return (fallback_title, kind, raw_input);
+    };
+
+    if name == "web_search"
+        && let Some(action) = result.get("action")
+    {
+        let action_type = action.get("type").and_then(serde_json::Value::as_str);
+        match action_type {
+            Some("search") => {
+                if let Some(query) = action.get("query").and_then(serde_json::Value::as_str) {
+                    raw_input["query"] = serde_json::Value::String(query.to_string());
+                    return (format!("Web search: {query}"), kind, raw_input);
+                }
+            }
+            Some("open_page") => {
+                if let Some(url) = action.get("url").and_then(serde_json::Value::as_str) {
+                    return (
+                        format!("Open page: {url}"),
+                        acp::ToolKind::Read,
+                        serde_json::json!({
+                            "variant": "WebFetch",
+                            "backend": true,
+                            "url": url,
+                        }),
+                    );
+                }
+            }
+            Some("find_in_page") => {
+                let pattern = action.get("pattern").and_then(serde_json::Value::as_str);
+                let url = action.get("url").and_then(serde_json::Value::as_str);
+                if let Some(pattern) = pattern {
+                    raw_input["query"] = serde_json::Value::String(pattern.to_string());
+                    if let Some(url) = url {
+                        raw_input["url"] = serde_json::Value::String(url.to_string());
+                    }
+                    return (format!("Find in page: {pattern}"), kind, raw_input);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if name == "x_search" {
+        let operation = result.get("name").and_then(serde_json::Value::as_str);
+        let input = result
+            .get("input")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+        if let Some(ref input) = input {
+            if let Some(query) = str_arg(input, &["query", "keyword", "search_term"]) {
+                raw_input["query"] = serde_json::Value::String(query.to_string());
+                return (format!("X search: {query}"), kind, raw_input);
+            }
+            if let Some(post_id) = str_arg(input, &["post_id", "tweet_id"]) {
+                raw_input["post_id"] = serde_json::Value::String(post_id.to_string());
+                return (format!("X thread: {post_id}"), kind, raw_input);
+            }
+        }
+        if let Some(operation) = operation {
+            return (
+                format!("X: {}", operation.replace('_', " ")),
+                kind,
+                raw_input,
+            );
+        }
+    }
+
+    (fallback_title, kind, raw_input)
+}
+
 /// Map a completed backend (server-side) tool call's payload to the ACP terminal
 /// status the shell should emit. The backend reports each call's real
 /// success/failure in the serialized payload's top-level `status` field (e.g. a
@@ -517,5 +597,51 @@ mod tests {
             backend_tool_call_status(None),
             acp::ToolCallStatus::Completed
         );
+    }
+
+    #[test]
+    fn completed_backend_tools_include_recognizable_context() {
+        let search = serde_json::json!({
+            "action": {"type": "search", "query": "Slack live cards"},
+            "id": "ws_1",
+            "status": "completed",
+        });
+        let (title, kind, input) = backend_tool_completed_display("web_search", Some(&search));
+        assert_eq!(title, "Web search: Slack live cards");
+        assert_eq!(kind, acp::ToolKind::Search);
+        assert_eq!(input["query"], "Slack live cards");
+
+        let open = serde_json::json!({
+            "action": {"type": "open_page", "url": "https://api.slack.com/block-kit"},
+            "id": "ws_2",
+            "status": "completed",
+        });
+        let (title, kind, input) = backend_tool_completed_display("web_search", Some(&open));
+        assert_eq!(title, "Open page: https://api.slack.com/block-kit");
+        assert_eq!(kind, acp::ToolKind::Read);
+        assert_eq!(input["variant"], "WebFetch");
+        assert_eq!(input["url"], "https://api.slack.com/block-kit");
+
+        let find = serde_json::json!({
+            "action": {
+                "type": "find_in_page",
+                "url": "https://api.slack.com/block-kit",
+                "pattern": "chat.update"
+            },
+            "id": "ws_3",
+            "status": "completed",
+        });
+        let (title, _, input) = backend_tool_completed_display("web_search", Some(&find));
+        assert_eq!(title, "Find in page: chat.update");
+        assert_eq!(input["query"], "chat.update");
+        assert_eq!(input["url"], "https://api.slack.com/block-kit");
+
+        let x_thread = serde_json::json!({
+            "name": "x_thread_fetch",
+            "input": "{\"post_id\":\"2087277067564933292\"}"
+        });
+        let (title, _, input) = backend_tool_completed_display("x_search", Some(&x_thread));
+        assert_eq!(title, "X thread: 2087277067564933292");
+        assert_eq!(input["post_id"], "2087277067564933292");
     }
 }
