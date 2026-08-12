@@ -565,6 +565,10 @@ pub(crate) struct PreparedToolCall {
     raw_arguments: String,
     /// Parsed JSON arguments ready for bridge.call().
     parsed_args: serde_json::Value,
+    /// Human-readable ACP identity emitted when the tool started. Reuse it on
+    /// the terminal update because ACP updates are sparse and consumers may
+    /// render the completion independently.
+    tool_call_display: Option<(String, acp::ToolKind, serde_json::Value)>,
     /// Model ID at time of call.
     model_id: String,
     /// Whether concatenated JSON recovery was used, and how many objects were found.
