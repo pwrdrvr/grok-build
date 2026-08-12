@@ -1319,6 +1319,7 @@ async fn handle_bridge_tool_success_runs_consumed_completion_sweep() {
                     concatenated_json_count: 0,
                     model_id: "test-model",
                     tool_parsed_args: &parsed_args,
+                    tool_call_display: None,
                     model_output_override: None,
                 })
                 .await;
