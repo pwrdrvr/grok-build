@@ -305,6 +305,7 @@ pub(super) struct BridgeToolSuccess<'a> {
     pub model_id: &'a str,
     pub tool_parsed_args: &'a serde_json::Value,
     pub model_output_override: Option<String>,
+    pub tool_call_display: Option<&'a (String, acp::ToolKind, serde_json::Value)>,
 }
 impl SessionActor {
     /// Merge the canonical `x.ai/tool` identity envelope into a tool-call event's `_meta`, resolving the tool from the live toolset by wire name.
@@ -1119,6 +1120,7 @@ impl SessionActor {
                             coercion_note: prepared.coercion_note.as_deref(),
                             model_id: prepared.model_id.as_deref().unwrap_or(""),
                             tool_parsed_args: prepared.authored_arguments(),
+                            tool_call_display: prepared.tool_call_display.as_ref(),
                             model_output_override,
                         })
                         .await;
@@ -2149,6 +2151,7 @@ impl SessionActor {
             invocation_id: invocation_id.as_str().to_owned(),
             tool_id,
             tool_version,
+            tool_call_display: tool_call_display.ok(),
             concatenated_json_count,
             coercion_note,
             dispatch_target_name,
@@ -2971,6 +2974,7 @@ impl SessionActor {
             coercion_note,
             model_id,
             tool_parsed_args,
+            tool_call_display,
             model_output_override,
         } = args;
         let (mut result, mut tool_layer_images) = drained.into_parts();
@@ -3006,6 +3010,11 @@ impl SessionActor {
         if let Some(mut tool_update) =
             acp_tool_update(&result.output, call_id, path_rewriter.as_ref(), tool_meta)
         {
+            if let Some((title, kind, raw_input)) = tool_call_display {
+                tool_update.fields.title = Some(title.clone());
+                tool_update.fields.kind = Some(*kind);
+                tool_update.fields.raw_input = Some(raw_input.clone());
+            }
             if tool_update.fields.status == Some(acp::ToolCallStatus::Failed) {
                 tracing::error!(
                     session_id = %self.session_info.id.0,

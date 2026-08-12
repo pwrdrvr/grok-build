@@ -649,6 +649,10 @@ pub(crate) struct PreparedToolCall {
     tool_id: String,
     /// Managed behavior version, when the registration has one.
     tool_version: Option<String>,
+    /// Human-readable ACP identity emitted when the tool started. Reuse it on
+    /// the terminal update because ACP updates are sparse and consumers may
+    /// render the completion independently.
+    tool_call_display: Option<(String, acp::ToolKind, serde_json::Value)>,
     /// Whether concatenated JSON recovery was used, and how many objects were found.
     concatenated_json_count: usize,
     /// Reminder appended to the model-visible tool result. None when this call was left unchanged.
