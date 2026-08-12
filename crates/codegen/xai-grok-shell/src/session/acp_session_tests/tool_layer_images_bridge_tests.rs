@@ -6,6 +6,7 @@ use xai_grok_tools::types::output::{MCPOutput, ToolOutput, ToolRunResult};
 use xai_grok_tools::util::base64_images::{ExtractedImage, IMAGE_CONTENT_PLACEHOLDER};
 /// 32×32 solid PNG — above vision min side/area so normalize keeps it.
 fn vision_ok_png_b64() -> String {
+    use base64::Engine as _;
     use image::{ImageBuffer, Rgba};
     let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_pixel(32, 32, Rgba([128, 64, 32, 255]));
@@ -72,6 +73,7 @@ async fn handle_bridge_tool_success_multimodal_mcp_image_deferred_followup() {
                     0,
                     "test-model",
                     &parsed_args,
+                    None,
                 )
                 .await
                 .expect("bridge success");
