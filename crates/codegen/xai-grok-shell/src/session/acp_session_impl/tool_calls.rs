@@ -351,6 +351,7 @@ pub(super) struct BridgeToolSuccess<'a> {
     pub model_id: &'a str,
     pub tool_parsed_args: &'a serde_json::Value,
     pub model_output_override: Option<String>,
+    pub tool_call_display: Option<&'a (String, acp::ToolKind, serde_json::Value)>,
 }
 impl SessionActor {
     /// Merge the canonical `x.ai/tool` identity envelope into a tool-call event's `_meta`, resolving the tool from the live toolset by wire name.
@@ -1048,6 +1049,7 @@ impl SessionActor {
                             concatenated_json_count: prepared.concatenated_json_count,
                             model_id: &prepared.model_id,
                             tool_parsed_args: &prepared.parsed_args,
+                            tool_call_display: prepared.tool_call_display.as_ref(),
                             model_output_override,
                         })
                         .await;
@@ -1926,6 +1928,7 @@ impl SessionActor {
             tool_name: call.function.name.clone(),
             raw_arguments,
             parsed_args: raw_input.clone(),
+            tool_call_display: tool_call_display.ok(),
             model_id: model_id_str,
             concatenated_json_count,
             dispatch_target_name,
@@ -2739,6 +2742,7 @@ impl SessionActor {
             concatenated_json_count,
             model_id,
             tool_parsed_args,
+            tool_call_display,
             model_output_override,
         } = args;
         let (mut result, mut tool_layer_images) = drained.into_parts();
@@ -2774,6 +2778,11 @@ impl SessionActor {
         if let Some(mut tool_update) =
             acp_tool_update(&result.output, call_id, path_rewriter.as_ref(), tool_meta)
         {
+            if let Some((title, kind, raw_input)) = tool_call_display {
+                tool_update.fields.title = Some(title.clone());
+                tool_update.fields.kind = Some(*kind);
+                tool_update.fields.raw_input = Some(raw_input.clone());
+            }
             if tool_update.fields.status == Some(acp::ToolCallStatus::Failed) {
                 tracing::error!(
                     session_id = %self.session_info.id.0,
