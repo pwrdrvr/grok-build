@@ -261,6 +261,16 @@ impl WorkflowTracker {
         state
     }
 
+    pub(crate) fn retained_agent_budget_on_resume(
+        existing_agent_budget: Option<u64>,
+        requested_agent_budget: Option<u64>,
+    ) -> Option<u64> {
+        match requested_agent_budget {
+            Some(requested) => Some(requested.max(existing_agent_budget.unwrap_or(0))),
+            None => existing_agent_budget,
+        }
+    }
+
     pub(crate) fn resume_run(
         &mut self,
         run_id: &str,
@@ -270,10 +280,8 @@ impl WorkflowTracker {
         if !run.state.status.is_resumable() {
             return None;
         }
-        let candidate_budget = match new_agent_budget {
-            Some(raised) => Some(raised.max(run.state.agent_budget.unwrap_or(0))),
-            None => run.state.agent_budget,
-        };
+        let candidate_budget =
+            Self::retained_agent_budget_on_resume(run.state.agent_budget, new_agent_budget);
         let raised = new_agent_budget.is_some_and(|b| b > run.state.agent_budget.unwrap_or(0));
         if run.state.status == WorkflowRunStatus::BudgetLimited
             && (!raised || candidate_budget.is_some_and(|limit| run.state.agents_used >= limit))
