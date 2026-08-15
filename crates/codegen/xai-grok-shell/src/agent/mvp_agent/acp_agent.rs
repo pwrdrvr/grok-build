@@ -2245,7 +2245,12 @@ impl acp::Agent for MvpAgent {
                     Ok(serde_json::json!({"ok": true})),
                 )
             }
-            "x.ai/interject" => crate::extensions::interject::handle(self, &args).await,
+            "x.ai/session/steer" | "x.ai/interject" => {
+                crate::extensions::interject::handle(self, &args).await
+            }
+            "x.ai/session/workflow_budget" => {
+                crate::extensions::workflow_budget::handle(self, &args).await
+            }
             "x.ai/feedback" | "x.ai/feedback/dismiss" | "x.ai/btw" => {
                 crate::extensions::feedback::handle(self, &args).await
             }

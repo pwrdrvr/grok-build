@@ -1,7 +1,7 @@
 # ACP compatibility review for PwrAgent
 
 Reviewed against the stable ACP v1 documentation and the PwrAgent source on
-2026-07-26. ACP v2 is still documented as draft and is not a release target
+2026-08-14. ACP v2 is still documented as draft and is not a release target
 for this fork yet.
 
 The negotiated `protocolVersion`, not the Rust crate version, determines ACP
@@ -40,9 +40,11 @@ than the stable ACP method, and **No** is not currently implemented.
 | Client filesystem methods | Optional client capability | Agent can call them | PwrAgent advertises `false` and does not handle them | App Server owns its filesystem/sandbox boundary |
 | Client terminal methods | Optional client capability | Agent can call them | PwrAgent advertises `false` and does not handle them | App Server owns command execution and streaming |
 | Prompt cancellation | `session/cancel` | Yes | Yes | `turn/interrupt` |
+| Mid-turn steering | No stable v1 method | Extension: `x.ai/session/steer` (legacy alias `x.ai/interject`) | Can invoke the extension on a resident Grok ACP session | Native mid-turn steering |
 | JSON-RPC request cancellation | `$/cancel_request` | No gateway routing | No | Connection layer handles App Server request lifecycle |
 | Modes and models | Legacy mode/model methods and config options | Mode and model selectors | Yes, including compatibility fallbacks | Model, reasoning effort, collaboration mode, personality, approval policy, and sandbox settings |
 | Generic/boolean config options | `session/set_config_option` | No generic implementation | Client can consume and set advertised options | Native App Server settings |
+| Workflow child-agent budget | No standard option | Extension: `x.ai/session/workflow_budget` | Can set a resident Grok session policy through the extension | Backend-specific collaboration controls |
 | Plans | Plan session update | Yes | Yes | `turn/plan/updated` and plan item deltas |
 | Slash commands | Available-command update | Yes | Yes | Skills and command surfaces through App Server |
 | MCP servers | Session setup and agent transport capabilities | HTTP and SSE advertised; session MCP configuration accepted | Supplies configured MCP servers | Native Codex MCP configuration and events |
@@ -67,6 +69,92 @@ The interoperability bug was the initialization response:
 `PromptCapabilities::new().embedded_context(true)` serialized `image: false`.
 ACP requires omitted or false capabilities to be treated as unsupported.
 This fork sets `.image(true)` and pins the wire shape with a regression test.
+
+## Mid-turn steering extension
+
+Stable ACP v1 has prompt submission and cancellation, but no operation that
+adds user context to a turn without cancelling it. Grok exposes the logical
+extension method `x.ai/session/steer`; because ACP custom methods carry a `_`
+prefix on raw JSON-RPC, clients send `_x.ai/session/steer` on the wire.
+`x.ai/interject` remains an equivalent compatibility alias.
+
+Request params use the existing Grok interjection shape:
+
+```json
+{
+  "sessionId": "session-id",
+  "text": "Keep the current work, but add a regression test.",
+  "interjectionId": "optional-client-dedup-id",
+  "content": []
+}
+```
+
+`sessionId` and non-blank `text` are required. `interjectionId` is optional
+and is echoed only on Grok's `x.ai/session/interjection` broadcast so an
+originating UI can deduplicate its optimistic rendering. `content` is
+optional; it may carry ACP text and image blocks. The first non-blank text
+block is the model-safe text override, while image blocks use the same image
+normalization path as native steering.
+
+A successful ACP extension response retains Grok's extension envelope:
+
+```json
+{
+  "result": {
+    "status": "queued",
+    "delivery": "currentTurn"
+  }
+}
+```
+
+`delivery` is `currentTurn` when the resident actor buffered the message for
+the next native safe gap (loop top, after a tool batch, or before turn return).
+It is `nextTurn` when the active turn settled before the actor accepted the
+command; in that race Grok promotes the message to the next standalone turn
+instead of dropping it. Success acknowledges actor acceptance, not that the
+model has already consumed the message; cancelling before a safe gap retains
+native cancellation semantics.
+
+Malformed or blank input returns ACP/JSON-RPC `invalid_params`. An unknown
+session returns `resource_not_found`. A closed or stopped resident session
+returns `internal_error`; the handler no longer reports success after a
+failed mailbox write.
+
+## Session workflow-budget extension
+
+Grok 1.0.4 has no standard ACP config option for workflow `agent_budget`.
+The logical extension `x.ai/session/workflow_budget` (raw wire method
+`_x.ai/session/workflow_budget`) reads or partially updates the resident
+session policy:
+
+```json
+{
+  "sessionId": "session-id",
+  "defaultAgentBudget": 64,
+  "maxAgentBudget": 256
+}
+```
+
+Both budget fields are optional, so omitting one preserves its current value;
+omitting both reads the policy. The response is
+`{"result":{"defaultAgentBudget":64,"maxAgentBudget":256}}`.
+Values must be integers in `1..=1024`, and the default cannot exceed the
+maximum.
+
+These fields have deliberately different semantics:
+
+- `defaultAgentBudget` replaces the built-in default of 128 only when a new
+  workflow omits its per-workflow `agent_budget`.
+- `maxAgentBudget` defaults to 1024 and is an enforced ceiling for every later
+  workflow launch or resume. An explicit per-workflow value still overrides
+  the default, but a value above the session maximum is rejected rather than
+  silently clamped.
+
+The policy is resident-session state and is not persisted. Changing it does
+not rewrite an already active run's admitted budget. A later resume is a new
+admission and must satisfy the then-current maximum. Invalid policy updates
+return `invalid_params`; missing/stopped sessions use the same errors as the
+steering extension.
 
 ## Recommended implementation order
 

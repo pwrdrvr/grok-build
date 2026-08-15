@@ -37,6 +37,7 @@ pub mod suggest;
 pub mod task;
 pub mod terminal;
 pub mod usage;
+pub mod workflow_budget;
 pub mod worktree;
 use crate::session::ExtMethodResult;
 use agent_client_protocol as acp;
