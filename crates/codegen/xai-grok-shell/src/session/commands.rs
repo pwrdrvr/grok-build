@@ -288,6 +288,17 @@ impl From<SkillUpdateKind> for AdvertiseTrigger {
         }
     }
 }
+/// How an accepted mid-turn steering message will reach the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InterjectionDelivery {
+    /// The resident turn was still active, so the message will be injected at
+    /// its next model/tool safe gap.
+    CurrentTurn,
+    /// The turn settled before the command reached the actor, so the message
+    /// was promoted to the next standalone turn instead of being dropped.
+    NextTurn,
+}
 pub enum SessionCommand {
     Initialize {
         system_prompt: String,
@@ -839,8 +850,8 @@ pub enum SessionCommand {
         respond_to: oneshot::Sender<Result<String, String>>,
     },
     /// Inject a user message into the active turn without canceling it.
-    /// The text is queued in `pending_interjections` and drained at the next safe point in `process_conversation_turn`.
-    /// Fire-and-forget: no response channel needed since the command just pushes to a Mutex.
+    /// The text is queued in `pending_interjections` and drained at the
+    /// next safe point in `process_conversation_turn`.
     Interject {
         text: String,
         /// Client-minted id echoed back on the broadcast `x.ai/session/interjection` so the originating pager can dedup its optimistic local block.
@@ -849,6 +860,10 @@ pub enum SessionCommand {
         /// Pasted images attached to the interjection.
         /// Empty from text-only or older clients.
         images: Vec<acp::ImageContent>,
+        /// Acknowledges the actor's race-safe delivery decision. ACP callers
+        /// must not report success before the resident actor accepts the
+        /// command.
+        respond_to: oneshot::Sender<InterjectionDelivery>,
     },
     /// Trigger a model turn so the model can print a visible goal progress summary.
     /// The goal orchestrator injects a system reminder into context (via `push_parent_reminder`) *before* sending this command.
@@ -860,6 +875,19 @@ pub enum SessionCommand {
     WorkflowCompletionTurn {
         run_id: String,
         revision: u64,
+    },
+    /// Read or partially update the session-scoped workflow child-agent
+    /// budget policy. Existing active runs are not mutated.
+    ConfigureWorkflowBudget {
+        default_agent_budget: Option<u64>,
+        max_agent_budget: Option<u64>,
+        #[allow(private_interfaces)]
+        respond_to: oneshot::Sender<
+            Result<
+                crate::session::workflow::manager::WorkflowBudgetPolicy,
+                crate::session::workflow::manager::WorkflowBudgetPolicyError,
+            >,
+        >,
     },
     /// Take turn messages from the chat state actor (proxied from mvp_agent).
     TakeTurnMessages {
