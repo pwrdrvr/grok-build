@@ -46,6 +46,7 @@ pub mod suggest;
 pub mod task;
 pub mod terminal;
 pub mod usage;
+pub mod workflow_budget;
 pub mod worktree;
 pub(crate) mod worktree_seed;
 use crate::session::ExtMethodResult;
