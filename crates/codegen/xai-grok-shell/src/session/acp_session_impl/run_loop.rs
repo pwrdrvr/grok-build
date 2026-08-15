@@ -1,6 +1,7 @@
 //! The session actor's main loop (`run_session`): command dispatch, the idle timer arms, and the free helpers only the loop consumes.
 #![allow(clippy::items_after_test_module)]
 use super::*;
+use crate::session::InterjectionDelivery;
 use xai_grok_telemetry::instrument_task;
 use xai_grok_telemetry::region::Parent;
 use xai_grok_telemetry::session_end::{self, Phase, SharedSessionEndTimer};
@@ -2037,9 +2038,12 @@ pub(super) async fn run_session(
                                 let _ = respond_to.send(result);
                             });
                         }
-                        SessionCommand::Interject { text, id, images } => {
-                            // Broadcast to every attached client so every pane viewing this session renders the interjection block
-                            // The originator dedups this echo by `id` against its optimistic local block; viewers render it
+                        SessionCommand::Interject { text, id, images, respond_to } => {
+                            // Broadcast to every attached client so all panes
+                            // viewing this session render the interjection block
+                            // — not just the originating client. The originator
+                            // dedups this echo by `id` against its optimistic
+                            // local block; viewers render it.
                             session.broadcast_interjection(&text, id.as_deref());
                             // Telemetry at enqueue (not drain) so it is recorded even when a cancel clears the buffer before the next drain point
                             session.events.emit(crate::session::events::Event::Interjected {
@@ -2062,6 +2066,7 @@ pub(super) async fn run_session(
                                     attachments: images,
                                 });
                                 tracing::info!("Queued mid-turn interjection");
+                                let _ = respond_to.send(InterjectionDelivery::CurrentTurn);
                             } else {
                                 session
                                     .queue_interjection_fallback_prompt(text, images, true)
@@ -2071,7 +2076,23 @@ pub(super) async fn run_session(
                                     completion_tx.clone(),
                                 )
                                 .await;
+                                let _ = respond_to.send(InterjectionDelivery::NextTurn);
                             }
+                        }
+                        SessionCommand::ConfigureWorkflowBudget {
+                            default_agent_budget,
+                            max_agent_budget,
+                            respond_to,
+                        } => {
+                            let result = session
+                                .workflow_manager
+                                .lock()
+                                .await
+                                .configure_budget_policy(
+                                    default_agent_budget,
+                                    max_agent_budget,
+                                );
+                            let _ = respond_to.send(result);
                         }
                         SessionCommand::GoalSummaryTurn { prompt_text } => {
                             // Queue a synthetic prompt so the model gets a turn to print a visible progress summary
