@@ -146,8 +146,18 @@ To prepare `CSC_LINK` locally without writing the base64 to the repository:
 base64 < PwrDrvr-Developer-ID-Application.p12 | tr -d '\n'
 ```
 
-Paste the result directly into the environment secret, then clear the shell
-history/clipboard according to the operator's secret-handling policy.
+If using that manual command, paste its result directly into the environment
+secret, then clear the shell history/clipboard according to the operator's
+secret-handling policy.
+
+If the existing PwrDrvr Developer ID `.p12` remains in the documented
+1Password item, the repository helper performs that upload without exposing the
+base64 in the terminal or uploading any other secret:
+
+```sh
+OP_ACCOUNT=<USER_ID_FROM_OP_ACCOUNT_LIST> \
+  scripts/release/upload-csc-link-from-1password.sh
+```
 
 ### `windows-signing` environment
 
