@@ -18,39 +18,6 @@ use super::tracker::WorkflowTracker;
 pub(crate) const WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION: usize = 4;
 pub(crate) const WORKFLOW_DEFAULT_AGENT_BUDGET: u64 = xai_workflow::DEFAULT_AGENT_BUDGET;
 
-/// Session-scoped policy for workflow child-agent calls. The default applies
-/// only when a launch omits `agent_budget`; the maximum is independently
-/// enforced for every new launch or resume.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct WorkflowBudgetPolicy {
-    pub(crate) default_agent_budget: u64,
-    pub(crate) max_agent_budget: u64,
-}
-
-impl Default for WorkflowBudgetPolicy {
-    fn default() -> Self {
-        Self {
-            default_agent_budget: WORKFLOW_DEFAULT_AGENT_BUDGET,
-            max_agent_budget: xai_workflow::MAX_AGENT_BUDGET,
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
-pub(crate) enum WorkflowBudgetPolicyError {
-    #[error("{field} must be between 1 and {maximum}, got {value}")]
-    OutOfRange {
-        field: &'static str,
-        value: u64,
-        maximum: u64,
-    },
-    #[error("defaultAgentBudget ({default}) must not exceed maxAgentBudget ({maximum})")]
-    DefaultExceedsMaximum { default: u64, maximum: u64 },
-    #[error("agent_budget {requested} exceeds the session maximum of {maximum}")]
-    RequestedExceedsMaximum { requested: u64, maximum: u64 },
-}
-
 struct ActiveRun {
     cancel: CancellationToken,
     pause_intent: Arc<AtomicBool>,
@@ -83,8 +50,6 @@ pub(crate) enum LaunchError {
         "session already has the maximum of {WORKFLOW_MAX_ACTIVE_RUNS_PER_SESSION} active workflow runs"
     )]
     TooManyActiveRuns,
-    #[error(transparent)]
-    AgentBudget(#[from] WorkflowBudgetPolicyError),
 }
 
 pub(crate) struct WorkflowManager {
@@ -103,7 +68,6 @@ pub(crate) struct WorkflowManager {
     active: HashMap<String, ActiveRun>,
     retiring: Vec<(String, oneshot::Receiver<()>)>,
     max_concurrent_agents: usize,
-    budget_policy: WorkflowBudgetPolicy,
 }
 
 impl WorkflowManager {
@@ -139,44 +103,7 @@ impl WorkflowManager {
             max_concurrent_agents: super::host_service::workflow_max_concurrent_agents(
                 max_concurrent_agents,
             ),
-            budget_policy: WorkflowBudgetPolicy::default(),
         }
-    }
-
-    pub(crate) fn budget_policy(&self) -> WorkflowBudgetPolicy {
-        self.budget_policy
-    }
-
-    /// Apply a partial policy update. Existing active runs retain their
-    /// admitted budget; the returned policy governs later launches/resumes.
-    pub(crate) fn configure_budget_policy(
-        &mut self,
-        default_agent_budget: Option<u64>,
-        max_agent_budget: Option<u64>,
-    ) -> Result<WorkflowBudgetPolicy, WorkflowBudgetPolicyError> {
-        let candidate = WorkflowBudgetPolicy {
-            default_agent_budget: default_agent_budget
-                .unwrap_or(self.budget_policy.default_agent_budget),
-            max_agent_budget: max_agent_budget.unwrap_or(self.budget_policy.max_agent_budget),
-        };
-        validate_policy(candidate)?;
-        self.budget_policy = candidate;
-        Ok(candidate)
-    }
-
-    pub(crate) fn effective_agent_budget(
-        &self,
-        requested: Option<u64>,
-    ) -> Result<u64, WorkflowBudgetPolicyError> {
-        let value = requested.unwrap_or(self.budget_policy.default_agent_budget);
-        validate_budget_value("agent_budget", value)?;
-        if value > self.budget_policy.max_agent_budget {
-            return Err(WorkflowBudgetPolicyError::RequestedExceedsMaximum {
-                requested: value,
-                maximum: self.budget_policy.max_agent_budget,
-            });
-        }
-        Ok(value)
     }
 
     #[cfg(test)]
@@ -213,9 +140,6 @@ impl WorkflowManager {
                     return Err(LaunchError::NotResumable(
                         existing.status.as_str().to_string(),
                     ));
-                }
-                if let Some(candidate) = spec.agent_budget.or(existing.agent_budget) {
-                    self.effective_agent_budget(Some(candidate))?;
                 }
                 if existing.status
                     == crate::session::workflow::tracker::WorkflowRunStatus::BudgetLimited
@@ -280,7 +204,7 @@ impl WorkflowManager {
             }
             None => {
                 let run_id = format!("wf_{}", uuid::Uuid::now_v7().simple());
-                let agent_budget = self.effective_agent_budget(spec.agent_budget)?;
+                let agent_budget = spec.agent_budget.unwrap_or(WORKFLOW_DEFAULT_AGENT_BUDGET);
                 self.store
                     .register(&run_id, &execution_script, &spec.args)
                     .map_err(|error| LaunchError::Store(error.to_string()))?;
@@ -811,29 +735,6 @@ impl WorkflowManager {
     }
 }
 
-fn validate_budget_value(field: &'static str, value: u64) -> Result<(), WorkflowBudgetPolicyError> {
-    if !(1..=xai_workflow::MAX_AGENT_BUDGET).contains(&value) {
-        return Err(WorkflowBudgetPolicyError::OutOfRange {
-            field,
-            value,
-            maximum: xai_workflow::MAX_AGENT_BUDGET,
-        });
-    }
-    Ok(())
-}
-
-fn validate_policy(policy: WorkflowBudgetPolicy) -> Result<(), WorkflowBudgetPolicyError> {
-    validate_budget_value("defaultAgentBudget", policy.default_agent_budget)?;
-    validate_budget_value("maxAgentBudget", policy.max_agent_budget)?;
-    if policy.default_agent_budget > policy.max_agent_budget {
-        return Err(WorkflowBudgetPolicyError::DefaultExceedsMaximum {
-            default: policy.default_agent_budget,
-            maximum: policy.max_agent_budget,
-        });
-    }
-    Ok(())
-}
-
 fn log_run_started(
     run_id: &str,
     parent_session_id: &str,
@@ -993,129 +894,6 @@ mod tests {
             agent_budget: None,
             resume_run_id: None,
         }
-    }
-
-    #[tokio::test]
-    async fn session_budget_policy_distinguishes_default_from_enforced_maximum() {
-        let (mut manager, _events) = test_manager(None);
-        assert_eq!(
-            manager.budget_policy(),
-            WorkflowBudgetPolicy {
-                default_agent_budget: 128,
-                max_agent_budget: 1024,
-            }
-        );
-
-        let policy = manager
-            .configure_budget_policy(Some(64), Some(100))
-            .expect("valid policy");
-        assert_eq!(policy.default_agent_budget, 64);
-        assert_eq!(policy.max_agent_budget, 100);
-        assert_eq!(manager.effective_agent_budget(None), Ok(64));
-        assert_eq!(manager.effective_agent_budget(Some(80)), Ok(80));
-        assert_eq!(
-            manager.effective_agent_budget(Some(101)),
-            Err(WorkflowBudgetPolicyError::RequestedExceedsMaximum {
-                requested: 101,
-                maximum: 100,
-            })
-        );
-    }
-
-    #[tokio::test]
-    async fn invalid_partial_policy_does_not_mutate_current_policy() {
-        let (mut manager, _events) = test_manager(None);
-        let original = manager.budget_policy();
-
-        assert_eq!(
-            manager.configure_budget_policy(Some(0), None),
-            Err(WorkflowBudgetPolicyError::OutOfRange {
-                field: "defaultAgentBudget",
-                value: 0,
-                maximum: 1024,
-            })
-        );
-        assert_eq!(manager.budget_policy(), original);
-
-        assert_eq!(
-            manager.configure_budget_policy(Some(256), Some(128)),
-            Err(WorkflowBudgetPolicyError::DefaultExceedsMaximum {
-                default: 256,
-                maximum: 128,
-            })
-        );
-        assert_eq!(manager.budget_policy(), original);
-    }
-
-    #[tokio::test]
-    async fn launch_uses_session_default_but_explicit_budget_still_overrides_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut manager, _events) = test_manager(Some(dir.path().to_path_buf()));
-        manager
-            .configure_budget_policy(Some(64), Some(100))
-            .expect("valid policy");
-        let script = || {
-            resolve_inline(
-                "let meta = #{ name: \"budget-test\", description: \"d\" };\ncomplete(\"done\");"
-                    .into(),
-            )
-            .unwrap()
-        };
-
-        let (default_run, outcome) = manager.launch(script(), spec()).unwrap();
-        assert!(matches!(
-            outcome.await.unwrap(),
-            WorkflowOutcome::Completed { .. }
-        ));
-        assert_eq!(
-            manager
-                .tracker
-                .lock()
-                .get(&default_run)
-                .unwrap()
-                .agent_budget,
-            Some(64)
-        );
-
-        let (explicit_run, outcome) = manager
-            .launch(
-                script(),
-                LaunchSpec {
-                    agent_budget: Some(80),
-                    ..spec()
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            outcome.await.unwrap(),
-            WorkflowOutcome::Completed { .. }
-        ));
-        assert_eq!(
-            manager
-                .tracker
-                .lock()
-                .get(&explicit_run)
-                .unwrap()
-                .agent_budget,
-            Some(80)
-        );
-
-        let error = manager
-            .launch(
-                script(),
-                LaunchSpec {
-                    agent_budget: Some(101),
-                    ..spec()
-                },
-            )
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            LaunchError::AgentBudget(WorkflowBudgetPolicyError::RequestedExceedsMaximum {
-                requested: 101,
-                maximum: 100,
-            })
-        ));
     }
 
     fn parallel_n_script(n: usize) -> String {

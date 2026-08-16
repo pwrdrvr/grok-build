@@ -1374,20 +1374,9 @@ pub(crate) async fn spawn_session_actor(
                 if input.validate_only {
                     let script = resolved.script.clone();
                     let probe_args = input.args.clone();
-                    let agent_budget = match manager
-                        .lock()
-                        .await
-                        .effective_agent_budget(input.agent_budget)
-                    {
-                        Ok(agent_budget) => agent_budget,
-                        Err(error) => {
-                            let _ = ack.send(WorkflowLaunchAck::Rejected {
-                                code: "workflow_invalid_input",
-                                detail: error.to_string(),
-                            });
-                            continue;
-                        }
-                    };
+                    let agent_budget = input
+                        .agent_budget
+                        .unwrap_or(xai_workflow::DEFAULT_AGENT_BUDGET);
                     tokio::spawn(async move {
                         let verdict = tokio::task::spawn_blocking(move || {
                             xai_workflow::validate_script_with_agent_budget(

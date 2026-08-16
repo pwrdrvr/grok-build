@@ -1,16 +1,14 @@
-//! `x.ai/session/steer` ACP extension handler.
+//! `x.ai/interject` extension handler.
 //!
 //! Queues a mid-turn interjection into the active session's pending
 //! interjection buffer.  The session actor drains it at the next safe
 //! point in `process_conversation_turn`.
-//!
-//! `x.ai/interject` remains as a compatibility alias for first-party clients.
 
 use agent_client_protocol as acp;
 
 use super::{ExtResult, parse_params};
 use crate::agent::MvpAgent;
-use crate::session::{InterjectionDelivery, SessionCommand};
+use crate::session::SessionCommand;
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,13 +21,6 @@ struct InterjectRequest {
     /// clients; absent = legacy text-only wire shape (empty after default).
     #[serde(default)]
     content: Vec<acp::ContentBlock>,
-}
-
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SteerResponse {
-    status: &'static str,
-    delivery: InterjectionDelivery,
 }
 
 /// Split a `content` array into the model-safe text and the image blocks.
@@ -46,8 +37,7 @@ fn split_content(content: Vec<acp::ContentBlock>) -> (Option<String>, Vec<acp::I
     (text_override, crate::session::image_blocks(content))
 }
 
-/// Handle `x.ai/session/steer` (and legacy `x.ai/interject`) by queueing a
-/// user steering message in the resident session actor.
+/// Handle `x.ai/interject` — queue a mid-turn user interjection.
 pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     let req: InterjectRequest = parse_params(args)?;
     let sid: acp::SessionId = req.session_id.clone().into();
@@ -55,37 +45,21 @@ pub async fn handle(agent: &MvpAgent, args: &acp::ExtRequest) -> ExtResult {
     // `session/load` (leader restart) waits for the load instead of failing.
     let session_handle = agent.session_handle_waiting_for_load(&sid).await;
     let Some(session) = session_handle else {
-        return Err(acp::Error::resource_not_found(Some(format!(
-            "session not found: {}",
-            req.session_id
-        ))));
+        return Err(
+            acp::Error::invalid_params().data(format!("session not found: {}", req.session_id))
+        );
     };
 
     let (text_override, images) = split_content(req.content);
-    let text = text_override.unwrap_or(req.text);
-    if text.trim().is_empty() {
-        return Err(acp::Error::invalid_params().data("steering text must not be empty"));
-    }
-    let (respond_to, response_rx) = tokio::sync::oneshot::channel();
-    session
-        .cmd_tx
-        .send(SessionCommand::Interject {
-            text,
-            id: req.interjection_id,
-            images,
-            respond_to,
-        })
-        .map_err(|_| {
-            acp::Error::internal_error().data("resident session command channel is closed")
-        })?;
-    let delivery = response_rx.await.map_err(|_| {
-        acp::Error::internal_error().data("resident session stopped before accepting steering")
-    })?;
+    let _ = session.cmd_tx.send(SessionCommand::Interject {
+        text: text_override.unwrap_or(req.text),
+        id: req.interjection_id,
+        images,
+    });
 
-    super::to_ext_response(Ok(SteerResponse {
-        status: "queued",
-        delivery,
-    }))
+    super::to_ext_response(Ok(serde_json::json!({
+        "status": "queued",
+    })))
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 use super::*;
-use crate::session::InterjectionDelivery;
 /// Build an unsigned JWT with a `tier` claim (header.payload.sig base64url).
 fn jwt_with_tier(tier: u64) -> String {
     use base64::Engine;
@@ -2330,6 +2329,10 @@ async fn push_roster_activity_delta_broadcasts_overridden_activity() {
     assert_eq!(changed.upserted[0].activity, RosterActivity::Idle);
 }
 /// Extract the inner payload from an ExtResponse.
+#[expect(
+    dead_code,
+    reason = "unused in production; remove expect when wired or delete the item"
+)]
 fn parse_ext_body(resp: &acp::ExtResponse) -> serde_json::Value {
     let outer: serde_json::Value =
         serde_json::from_str(resp.0.get()).expect("ExtResponse must be valid JSON");
@@ -4187,89 +4190,6 @@ async fn drive_close(agent: &MvpAgent, session_id: &str) -> Result<acp::ExtRespo
             std::sync::Arc::from(raw),
         ))
         .await
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn session_steer_extension_dispatches_and_reports_actor_delivery() {
-    use acp::Agent as _;
-    let agent = build_minimal_agent_for_tests();
-    let sid = acp::SessionId::new("sess-steer-ext");
-    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
-    agent.insert_resident(&sid, handle);
-    let raw = serde_json::value::to_raw_value(&serde_json::json!({
-        "sessionId": sid.0.as_ref(),
-        "text": "add focused tests",
-        "interjectionId": "steer-1"
-    }))
-    .unwrap();
-
-    let request = agent.ext_method(acp::ExtRequest::new(
-        "x.ai/session/steer",
-        std::sync::Arc::from(raw),
-    ));
-    let actor = async {
-        match cmd_rx.recv().await.expect("steer command") {
-            SessionCommand::Interject {
-                text,
-                id,
-                images,
-                respond_to,
-            } => {
-                assert_eq!(text, "add focused tests");
-                assert_eq!(id.as_deref(), Some("steer-1"));
-                assert!(images.is_empty());
-                let _ = respond_to.send(InterjectionDelivery::CurrentTurn);
-            }
-            _ => panic!("expected interjection command"),
-        }
-    };
-    let (response, ()) = tokio::join!(request, actor);
-    let body = parse_ext_body(&response.expect("steer response"));
-    assert_eq!(body["status"], "queued");
-    assert_eq!(body["delivery"], "currentTurn");
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn workflow_budget_extension_dispatches_partial_session_policy() {
-    use acp::Agent as _;
-    let agent = build_minimal_agent_for_tests();
-    let sid = acp::SessionId::new("sess-workflow-budget-ext");
-    let (handle, _tx, mut cmd_rx) = make_live_session_handle(&sid, None);
-    agent.insert_resident(&sid, handle);
-    let raw = serde_json::value::to_raw_value(&serde_json::json!({
-        "sessionId": sid.0.as_ref(),
-        "defaultAgentBudget": 64,
-        "maxAgentBudget": 256
-    }))
-    .unwrap();
-
-    let request = agent.ext_method(acp::ExtRequest::new(
-        "x.ai/session/workflow_budget",
-        std::sync::Arc::from(raw),
-    ));
-    let actor = async {
-        match cmd_rx.recv().await.expect("budget command") {
-            SessionCommand::ConfigureWorkflowBudget {
-                default_agent_budget,
-                max_agent_budget,
-                respond_to,
-            } => {
-                assert_eq!(default_agent_budget, Some(64));
-                assert_eq!(max_agent_budget, Some(256));
-                let _ = respond_to.send(Ok(
-                    crate::session::workflow::manager::WorkflowBudgetPolicy {
-                        default_agent_budget: 64,
-                        max_agent_budget: 256,
-                    },
-                ));
-            }
-            _ => panic!("expected workflow budget command"),
-        }
-    };
-    let (response, ()) = tokio::join!(request, actor);
-    let body = parse_ext_body(&response.expect("workflow budget response"));
-    assert_eq!(body["defaultAgentBudget"], 64);
-    assert_eq!(body["maxAgentBudget"], 256);
 }
 /// Every method `parse_queue_edit_command` accepts must be forwarded from
 /// `ext_notification` to that session's mailbox. Parser-only coverage misses
