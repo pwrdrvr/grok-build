@@ -13,6 +13,9 @@ WINDOWS_SIGNER_PATH = ROOT / "scripts/release/sign-windows-binary.ps1"
 WINDOWS_SIGNING_PREPARER_PATH = (
     ROOT / "scripts/release/prepare-trusted-signing.ps1"
 )
+WINDOWS_SIGNING_VERIFIER_PATH = (
+    ROOT / "scripts/release/verify-trusted-signing-tools.ps1"
+)
 CSC_UPLOADER_PATH = ROOT / "scripts/release/upload-csc-link-from-1password.sh"
 RUNBOOK_PATH = ROOT / "docs/pwragent-distribution.md"
 
@@ -41,6 +44,7 @@ workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 check_workflow = CHECK_WORKFLOW_PATH.read_text(encoding="utf-8")
 windows_signer = WINDOWS_SIGNER_PATH.read_text(encoding="utf-8")
 windows_signing_preparer = WINDOWS_SIGNING_PREPARER_PATH.read_text(encoding="utf-8")
+windows_signing_verifier = WINDOWS_SIGNING_VERIFIER_PATH.read_text(encoding="utf-8")
 csc_uploader = CSC_UPLOADER_PATH.read_text(encoding="utf-8")
 runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
@@ -138,12 +142,21 @@ for fragment in (
     'SignatureStatus]::Valid',
     'TimeStamperCertificate',
     'CN=$expectedPublisher',
-    '"modules/TrustedSigning/$trustedSigningVersion/TrustedSigning.psd1"',
-    'Get-FileHash -Algorithm SHA256',
-    'TrustedSigning input contains files not covered by SHA256SUMS',
-    'Microsoft.Trusted.Signing.Client.1.0.95',
+    'verify-trusted-signing-tools.ps1',
+    '$verifiedSigningTools.ModuleManifest',
+    '$verifiedSigningTools.LocalAppDataRoot',
 ):
     require(windows_signer, fragment, "Windows signing script")
+
+for fragment in (
+    '"modules/TrustedSigning/$trustedSigningVersion/TrustedSigning.psd1"',
+    'Get-FileHash -Algorithm SHA256',
+    'Get-ChildItem -LiteralPath $resolvedSigningToolsRoot -File -Recurse -Force',
+    'TrustedSigning input files are not covered by SHA256SUMS',
+    '$uncoveredFiles -join',
+    'Microsoft.Trusted.Signing.Client.1.0.95',
+):
+    require(windows_signing_verifier, fragment, "TrustedSigning verifier")
 
 for fragment in (
     'trustedSigningVersion = "0.5.8"',
@@ -157,6 +170,8 @@ for fragment in (
     "SignatureStatus]::Valid",
     'catalogSigner -ne "Microsoft Corporation"',
     "Get-EveryDependency",
+    "-File -Recurse -Force",
+    "$filesToChecksum",
     'Join-Path $resolvedOutputRoot "SHA256SUMS"',
 ):
     require(windows_signing_preparer, fragment, "TrustedSigning preparer")
@@ -170,6 +185,10 @@ for fragment in (
     "timeout-minutes: 10",
     "scripts/release/prepare-trusted-signing.ps1",
     "-OutputRoot $env:RUNNER_TEMP/signing-tools",
+    "Verify signing client after archive round-trip",
+    "tar.exe -czf",
+    "tar.exe -xzf",
+    "scripts/release/verify-trusted-signing-tools.ps1",
     "id-token: none",
 ):
     require(check_workflow, fragment, "release signing check workflow")
