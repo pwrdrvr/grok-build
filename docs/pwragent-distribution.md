@@ -147,7 +147,9 @@ label:
 
 The workflow uses `pull_request`, never `pull_request_target`, so the tested
 source and merge ref are explicit. Removing the label triggers a no-op run and
-cancels an in-progress signing-test run for the same pull-request ref.
+cancels an in-progress signing-test run for the same pull-request ref. Adding or
+removing any other label remains a no-op in a separate concurrency group, so it
+cannot cancel, queue behind, or restart the protected signing rehearsal.
 
 ## One-time operator setup for `pwrdrvr/grok-build`
 
