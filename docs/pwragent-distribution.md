@@ -105,9 +105,13 @@ is never available to build jobs or manual-dispatch builds. Pull requests gain
 access only through the deliberately label-gated, environment-approved signing
 test described below.
 
-`scripts/check-release-signing.py` pins these workflow invariants. The small
+`scripts/check-release-signing.py` pins these workflow invariants. The
 `Check PwrAgent release signing` workflow runs it on relevant pull requests and
-changes to the downstream `pwragent` branch.
+changes to the downstream `pwragent` branch. A separate Windows job in that
+check downloads and validates the pinned TrustedSigning client and its
+dependencies without compiling Grok, entering a protected environment, or
+reading secrets. This catches signing-tool preparation failures before an
+expensive end-to-end release rehearsal.
 
 The raw Grok executable is Developer ID signed but is not submitted separately
 for Apple notarization. It is normally embedded during PwrAgent's no-secret
