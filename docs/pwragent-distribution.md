@@ -77,23 +77,33 @@ signing:
    archive, imports the Developer ID certificate into an ephemeral keychain,
    applies a hardened-runtime timestamped signature, and requires both
    `codesign --verify` and Team ID `T44CNHC4UH` before packaging.
-3. The `windows-prepare` job builds and archives `grok.exe` without an
-   environment or credentials and exports the archive SHA-256.
+3. The `windows-prepare` job builds `grok.exe`, downloads the exact
+   `TrustedSigning` 0.5.8 module plus its pinned signing-client dependencies,
+   validates the Microsoft module catalog, records a per-file checksum
+   manifest, and archives all of that without an environment or credentials.
+   It exports the complete archive SHA-256.
 4. The `windows-sign` job is gated by the `windows-signing` GitHub Environment.
    It does not check out source or run project dependency installation. It
-   verifies the prepared archive, installs Microsoft's `TrustedSigning`
-   PowerShell module, signs through Azure Artifact Signing, and requires a
-   valid timestamped Authenticode signature whose subject begins
-   `CN=PwrDrvr LLC`.
-5. The release job depends on both protected signing jobs, downloads only
-   `release-*` artifacts, requires exactly four platform archives, calculates
-   `SHA256SUMS` from the final signed packages, and only then creates the
-   immutable GitHub Release.
+   verifies the complete prepared archive and the nested signing-tool checksum
+   manifest, signs through Azure Artifact Signing, and requires a valid
+   timestamped Authenticode signature whose subject begins `CN=PwrDrvr LLC`.
+   Its only network calls are the irreducible Azure signing and timestamp
+   requests; acquisition of build and signing tools happened before the
+   protected boundary.
+5. The `release-candidate` job depends on both protected signing jobs and the
+   Linux builds, downloads only `release-*` artifacts, requires exactly four
+   platform archives, calculates `SHA256SUMS` from the final signed packages,
+   and uploads one `signed-release-candidate` workflow artifact.
+6. The tag-only release job downloads that exact assembled candidate and
+   creates the immutable GitHub Release. It never rebuilds, resigns, or gathers
+   platform outputs independently.
 
 This dependency chain is fail closed: a missing environment approval, missing
 secret or variable, bad certificate, digest mismatch, signing-service failure,
 wrong signer, or missing timestamp prevents release creation. Signing material
-is never available to build jobs, manual-dispatch builds, or pull requests.
+is never available to build jobs or manual-dispatch builds. Pull requests gain
+access only through the deliberately label-gated, environment-approved signing
+test described below.
 
 `scripts/check-release-signing.py` pins these workflow invariants. The small
 `Check PwrAgent release signing` workflow runs it on relevant pull requests and
@@ -105,6 +115,35 @@ packaging stage and then covered by PwrAgent's signed and notarized application
 bundle. If this repository later distributes Grok as a standalone macOS app,
 package, or disk image, add notarization for that container before calling it a
 Gatekeeper-ready standalone download.
+
+## Testing protected signing from a pull request
+
+The `ci:release-signing` label runs the same preparation, protected signing,
+signature verification, and release-candidate assembly used by a tag. It does
+not run the `release` job and therefore cannot create or modify a GitHub
+Release. The result is a seven-day `signed-release-candidate` workflow artifact
+containing all four platform archives and their final `SHA256SUMS`.
+
+This is intentionally not available to every pull request. Before applying the
+label:
+
+1. Inspect the complete PR diff, including the workflow and every script that
+   enters a signing input archive.
+2. In both `apple-signing` and `windows-signing`, temporarily add the exact
+   **branch** rule `refs/pull/<PR number>/merge`. Keep the existing
+   `pwragent-v*` tag rule.
+3. Apply `ci:release-signing` to the PR. GitHub runs the workflow from
+   `refs/pull/<PR number>/merge`; each signing job still waits for the required
+   `huntharo` environment approval before it can read secrets.
+4. After both approvals, wait for `Assemble signed release candidate` and
+   inspect/download the `signed-release-candidate` artifact. No release is
+   published from a pull-request event.
+5. Remove the label and delete the temporary `refs/pull/<PR number>/merge`
+   branch rule from both environments when the test is complete.
+
+The workflow uses `pull_request`, never `pull_request_target`, so the tested
+source and merge ref are explicit. Removing the label triggers a no-op run and
+cancels an in-progress signing-test run for the same pull-request ref.
 
 ## One-time operator setup for `pwrdrvr/grok-build`
 
