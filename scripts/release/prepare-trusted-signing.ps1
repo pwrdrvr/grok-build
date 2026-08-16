@@ -36,6 +36,7 @@ if ([string]$moduleMetadata.CompanyName -ne "Microsoft") {
 $catalogPath = Join-Path (Split-Path $moduleManifest) "catalog.cat"
 $catalogResult = Test-FileCatalog `
   -Detailed `
+  -FilesToSkip "PSGetModuleInfo.xml" `
   -Path (Split-Path $moduleManifest) `
   -CatalogFilePath $catalogPath
 if ([string]$catalogResult.Status -ne "Valid") {

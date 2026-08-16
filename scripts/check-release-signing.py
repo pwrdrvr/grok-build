@@ -142,6 +142,7 @@ for fragment in (
     "-RequiredVersion $trustedSigningVersion",
     "Test-FileCatalog",
     "-Detailed",
+    '-FilesToSkip "PSGetModuleInfo.xml"',
     "SignatureStatus]::Valid",
     'catalogSigner -ne "Microsoft Corporation"',
     "Get-EveryDependency",
