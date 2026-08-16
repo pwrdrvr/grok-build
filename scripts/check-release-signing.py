@@ -9,7 +9,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release.yml"
 WINDOWS_SIGNER_PATH = ROOT / "scripts/release/sign-windows-binary.ps1"
-INSTALLER_PATH = ROOT / "scripts/release/install-trusted-signing.ps1"
+WINDOWS_SIGNING_PREPARER_PATH = (
+    ROOT / "scripts/release/prepare-trusted-signing.ps1"
+)
 CSC_UPLOADER_PATH = ROOT / "scripts/release/upload-csc-link-from-1password.sh"
 RUNBOOK_PATH = ROOT / "docs/pwragent-distribution.md"
 
@@ -36,17 +38,22 @@ def job(workflow: str, name: str) -> str:
 
 workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 windows_signer = WINDOWS_SIGNER_PATH.read_text(encoding="utf-8")
-installer = INSTALLER_PATH.read_text(encoding="utf-8")
+windows_signing_preparer = WINDOWS_SIGNING_PREPARER_PATH.read_text(encoding="utf-8")
 csc_uploader = CSC_UPLOADER_PATH.read_text(encoding="utf-8")
 runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
 require(workflow, "id-token: none", "workflow")
 require(workflow, "run: python3 scripts/check-release-signing.py", "metadata job")
+require(workflow, "pull_request:", "workflow")
+require(workflow, "- labeled", "workflow")
+require(workflow, "- synchronize", "workflow")
+require(workflow, "'ci:release-signing'", "workflow")
 
 macos_prepare = job(workflow, "macos-universal")
 macos_sign = job(workflow, "macos-sign")
 windows_prepare = job(workflow, "windows-prepare")
 windows_sign = job(workflow, "windows-sign")
+release_candidate = job(workflow, "release-candidate")
 release = job(workflow, "release")
 
 for name, section in (
@@ -58,7 +65,15 @@ for name, section in (
     require(section, "signing-input-sha256:", name)
 
 for fragment in (
-    "if: startsWith(github.ref, 'refs/tags/pwragent-v')",
+    "scripts/release/prepare-trusted-signing.ps1",
+    "-OutputRoot signing-tools",
+    "stage/windows-x86_64 signing-tools scripts/release",
+):
+    require(windows_prepare, fragment, "windows-prepare")
+
+for fragment in (
+    "startsWith(github.ref, 'refs/tags/pwragent-v')",
+    "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
     "environment: apple-signing",
     "CSC_LINK: ${{ secrets.CSC_LINK }}",
     "CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}",
@@ -72,10 +87,11 @@ for fragment in (
     require(macos_sign, fragment, "macos-sign")
 
 for fragment in (
-    "if: startsWith(github.ref, 'refs/tags/pwragent-v')",
+    "startsWith(github.ref, 'refs/tags/pwragent-v')",
+    "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
     "environment: windows-signing",
-    "scripts/release/install-trusted-signing.ps1",
     "scripts/release/sign-windows-binary.ps1",
+    "-SigningToolsRoot signing-tools",
     "WIN_AZURE_SIGN_PUBLISHER_NAME: ${{ vars.WIN_AZURE_SIGN_PUBLISHER_NAME }}",
     "WIN_AZURE_SIGN_ENDPOINT: ${{ vars.WIN_AZURE_SIGN_ENDPOINT }}",
     "WIN_AZURE_SIGN_ACCOUNT: ${{ vars.WIN_AZURE_SIGN_ACCOUNT }}",
@@ -86,9 +102,21 @@ for fragment in (
 ):
     require(windows_sign, fragment, "windows-sign")
 
+if "Install-Module" in windows_sign or "Save-Module" in windows_sign:
+    fail("windows-sign must not acquire PowerShell modules inside the protected job")
+
 for dependency in ("macos-sign", "windows-sign"):
-    require(release, f"- {dependency}", "release")
-require(release, "test \"${#assets[@]}\" -eq 4", "release")
+    require(release_candidate, f"- {dependency}", "release-candidate")
+require(
+    release_candidate,
+    "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
+    "release-candidate",
+)
+require(release_candidate, "test \"${#assets[@]}\" -eq 4", "release-candidate")
+require(release_candidate, "name: signed-release-candidate", "release-candidate")
+require(release_candidate, "contents: read", "release-candidate")
+require(release, "- release-candidate", "release")
+require(release, "name: signed-release-candidate", "release")
 require(release, "contents: write", "release")
 
 for fragment in (
@@ -99,15 +127,22 @@ for fragment in (
     'SignatureStatus]::Valid',
     'TimeStamperCertificate',
     'CN=$expectedPublisher',
+    '"modules/TrustedSigning/$trustedSigningVersion/TrustedSigning.psd1"',
+    'Get-FileHash -Algorithm SHA256',
+    'TrustedSigning input contains files not covered by SHA256SUMS',
+    'Microsoft.Trusted.Signing.Client.1.0.95',
 ):
     require(windows_signer, fragment, "Windows signing script")
 
 for fragment in (
-    "-Name TrustedSigning",
-    "-MinimumVersion 0.5.0",
-    "Get-Command Invoke-TrustedSigning",
+    'trustedSigningVersion = "0.5.8"',
+    "Save-Module",
+    "-RequiredVersion $trustedSigningVersion",
+    "Test-FileCatalog",
+    "Get-EveryDependency",
+    'Join-Path $resolvedOutputRoot "SHA256SUMS"',
 ):
-    require(installer, fragment, "TrustedSigning installer")
+    require(windows_signing_preparer, fragment, "TrustedSigning preparer")
 
 for fragment in (
     'repo="${GITHUB_REPOSITORY:-pwrdrvr/grok-build}"',
@@ -137,6 +172,9 @@ for fragment in (
     "`AZURE_CLIENT_SECRET`",
     "Artifact Signing Certificate Profile Signer",
     "2028-09-29",
+    "`ci:release-signing`",
+    "`refs/pull/<PR number>/merge`",
+    "`signed-release-candidate`",
 ):
     require(runbook, fragment, "release signing runbook")
 
