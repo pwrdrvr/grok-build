@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release.yml"
 WINDOWS_SIGNER_PATH = ROOT / "scripts/release/sign-windows-binary.ps1"
 INSTALLER_PATH = ROOT / "scripts/release/install-trusted-signing.ps1"
+CSC_UPLOADER_PATH = ROOT / "scripts/release/upload-csc-link-from-1password.sh"
 RUNBOOK_PATH = ROOT / "docs/pwragent-distribution.md"
 
 
@@ -36,6 +37,7 @@ def job(workflow: str, name: str) -> str:
 workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 windows_signer = WINDOWS_SIGNER_PATH.read_text(encoding="utf-8")
 installer = INSTALLER_PATH.read_text(encoding="utf-8")
+csc_uploader = CSC_UPLOADER_PATH.read_text(encoding="utf-8")
 runbook = RUNBOOK_PATH.read_text(encoding="utf-8")
 
 require(workflow, "id-token: none", "workflow")
@@ -106,6 +108,21 @@ for fragment in (
     "Get-Command Invoke-TrustedSigning",
 ):
     require(installer, fragment, "TrustedSigning installer")
+
+for fragment in (
+    'repo="${GITHUB_REPOSITORY:-pwrdrvr/grok-build}"',
+    'environment="${GITHUB_ENVIRONMENT:-apple-signing}"',
+    "op read",
+    "gh secret set CSC_LINK",
+):
+    require(csc_uploader, fragment, "CSC_LINK upload helper")
+
+uploaded_secret_names = re.findall(r"gh secret set ([A-Z0-9_]+)", csc_uploader)
+if uploaded_secret_names != ["CSC_LINK"]:
+    fail(
+        "CSC_LINK upload helper must upload exactly CSC_LINK; found "
+        + repr(uploaded_secret_names)
+    )
 
 for fragment in (
     "Developer ID Application: PwrDrvr LLC (T44CNHC4UH)",
