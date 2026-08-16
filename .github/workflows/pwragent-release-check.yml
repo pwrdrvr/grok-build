@@ -1,0 +1,37 @@
+name: Check PwrAgent release signing
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/pwragent-release*.yml"
+      - "docs/pwragent-distribution.md"
+      - "scripts/check-release-signing.py"
+      - "scripts/release/**"
+  push:
+    branches:
+      - pwragent
+    paths:
+      - ".github/workflows/pwragent-release*.yml"
+      - "docs/pwragent-distribution.md"
+      - "scripts/check-release-signing.py"
+      - "scripts/release/**"
+
+permissions:
+  contents: read
+  id-token: none
+
+jobs:
+  release-signing-contract:
+    name: Release signing contract
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate fail-closed signing workflow
+        run: python3 scripts/check-release-signing.py
