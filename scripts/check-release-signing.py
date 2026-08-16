@@ -50,6 +50,15 @@ require(workflow, "pull_request:", "workflow")
 require(workflow, "- labeled", "workflow")
 require(workflow, "- synchronize", "workflow")
 require(workflow, "'ci:release-signing'", "workflow")
+for fragment in (
+    "github.event.action == 'labeled' || github.event.action == 'unlabeled'",
+    "github.event.label.name != 'ci:release-signing'",
+    "github.run_id",
+    "github.event.action == 'synchronize'",
+    "github.event.action == 'reopened'",
+    "github.event.label.name == 'ci:release-signing'",
+):
+    require(workflow, fragment, "PR signing trigger guard")
 
 macos_prepare = job(workflow, "macos-universal")
 macos_sign = job(workflow, "macos-sign")
