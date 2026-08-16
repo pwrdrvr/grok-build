@@ -17,15 +17,29 @@ permissions:
   id-token: none
 
 concurrency:
-  group: pwragent-grok-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: >-
+    pwragent-grok-${{ github.ref }}-${{
+      github.event_name == 'pull_request'
+      && (github.event.action == 'labeled' || github.event.action == 'unlabeled')
+      && github.event.label.name != 'ci:release-signing'
+      && github.run_id
+      || 'release-signing'
+    }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request'
+        && (github.event.action == 'synchronize'
+        || github.event.action == 'reopened'
+        || github.event.label.name == 'ci:release-signing') }}
 
 jobs:
   metadata:
     name: Resolve release metadata
     if: >-
       github.event_name != 'pull_request'
-      || contains(github.event.pull_request.labels.*.name, 'ci:release-signing')
+      || (contains(github.event.pull_request.labels.*.name, 'ci:release-signing')
+      && (github.event.action == 'synchronize'
+      || github.event.action == 'reopened'
+      || github.event.label.name == 'ci:release-signing'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
