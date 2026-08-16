@@ -35,7 +35,7 @@ if ([string]$moduleMetadata.CompanyName -ne "Microsoft") {
 
 $catalogPath = Join-Path (Split-Path $moduleManifest) "catalog.cat"
 $moduleFiles = @(
-  Get-ChildItem -LiteralPath (Split-Path $moduleManifest) -File -Recurse |
+  Get-ChildItem -LiteralPath (Split-Path $moduleManifest) -File -Recurse -Force |
     Where-Object {
       $_.Name -ne "PSGetModuleInfo.xml" -and
       $_.FullName -ne $catalogPath
@@ -101,12 +101,19 @@ foreach ($dependencyPath in @(
   }
 }
 
-Get-ChildItem -LiteralPath $resolvedOutputRoot -File -Recurse |
-  Sort-Object FullName |
-  ForEach-Object {
+$checksumManifest = Join-Path $resolvedOutputRoot "SHA256SUMS"
+$filesToChecksum = @(
+  Get-ChildItem -LiteralPath $resolvedOutputRoot -File -Recurse -Force |
+    Where-Object { $_.FullName -ne $checksumManifest } |
+    Sort-Object FullName
+)
+$checksumLines = @(
+  $filesToChecksum | ForEach-Object {
     $relativePath = [System.IO.Path]::GetRelativePath($resolvedOutputRoot, $_.FullName)
     $sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
     "$sha256  $($relativePath.Replace('\', '/'))"
-  } | Set-Content -LiteralPath (Join-Path $resolvedOutputRoot "SHA256SUMS") -Encoding ascii
+  }
+)
+$checksumLines | Set-Content -LiteralPath $checksumManifest -Encoding ascii
 
 Write-Host "Prepared pinned TrustedSigning $trustedSigningVersion and its dependencies in $resolvedOutputRoot."

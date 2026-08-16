@@ -110,8 +110,10 @@ test described below.
 changes to the downstream `pwragent` branch. A separate Windows job in that
 check downloads and validates the pinned TrustedSigning client and its
 dependencies without compiling Grok, entering a protected environment, or
-reading secrets. This catches signing-tool preparation failures before an
-expensive end-to-end release rehearsal.
+reading secrets. It archives and re-expands that bundle, then runs the same
+complete checksum verifier used by the protected signing job. This catches
+signing-tool preparation and archive-boundary failures before an expensive
+end-to-end release rehearsal.
 
 The raw Grok executable is Developer ID signed but is not submitted separately
 for Apple notarization. It is normally embedded during PwrAgent's no-secret

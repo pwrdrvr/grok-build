@@ -54,3 +54,22 @@ jobs:
         run: >-
           ./scripts/release/prepare-trusted-signing.ps1
           -OutputRoot $env:RUNNER_TEMP/signing-tools
+
+      - name: Verify signing client after archive round-trip
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $archive = Join-Path $env:RUNNER_TEMP "signing-tools.tgz"
+          $expandedRoot = Join-Path $env:RUNNER_TEMP "signing-tools-roundtrip"
+          & tar.exe -czf $archive -C $env:RUNNER_TEMP signing-tools
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to archive prepared signing tools (exit code $LASTEXITCODE)."
+          }
+          New-Item -ItemType Directory -Force $expandedRoot | Out-Null
+          & tar.exe -xzf $archive -C $expandedRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to expand prepared signing tools (exit code $LASTEXITCODE)."
+          }
+          & ./scripts/release/verify-trusted-signing-tools.ps1 `
+            -SigningToolsRoot (Join-Path $expandedRoot "signing-tools") |
+            Out-Null
