@@ -8,6 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release.yml"
+CHECK_WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release-check.yml"
 WINDOWS_SIGNER_PATH = ROOT / "scripts/release/sign-windows-binary.ps1"
 WINDOWS_SIGNING_PREPARER_PATH = (
     ROOT / "scripts/release/prepare-trusted-signing.ps1"
@@ -37,6 +38,7 @@ def job(workflow: str, name: str) -> str:
 
 
 workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
+check_workflow = CHECK_WORKFLOW_PATH.read_text(encoding="utf-8")
 windows_signer = WINDOWS_SIGNER_PATH.read_text(encoding="utf-8")
 windows_signing_preparer = WINDOWS_SIGNING_PREPARER_PATH.read_text(encoding="utf-8")
 csc_uploader = CSC_UPLOADER_PATH.read_text(encoding="utf-8")
@@ -139,10 +141,29 @@ for fragment in (
     "Save-Module",
     "-RequiredVersion $trustedSigningVersion",
     "Test-FileCatalog",
+    "-Detailed",
+    "SignatureStatus]::Valid",
+    'catalogSigner -ne "Microsoft Corporation"',
     "Get-EveryDependency",
     'Join-Path $resolvedOutputRoot "SHA256SUMS"',
 ):
     require(windows_signing_preparer, fragment, "TrustedSigning preparer")
+
+if "Install-PackageProvider" in windows_signing_preparer:
+    fail("TrustedSigning preparer must not bootstrap the legacy NuGet provider")
+
+for fragment in (
+    "trusted-signing-preparation:",
+    "runs-on: windows-2022",
+    "timeout-minutes: 10",
+    "scripts/release/prepare-trusted-signing.ps1",
+    "-OutputRoot $env:RUNNER_TEMP/signing-tools",
+    "id-token: none",
+):
+    require(check_workflow, fragment, "release signing check workflow")
+
+if "environment:" in check_workflow or "secrets." in check_workflow:
+    fail("release signing check workflow must not enter an environment or read secrets")
 
 for fragment in (
     'repo="${GITHUB_REPOSITORY:-pwrdrvr/grok-build}"',

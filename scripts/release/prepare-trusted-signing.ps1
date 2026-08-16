@@ -12,16 +12,6 @@ $moduleRoot = Join-Path $resolvedOutputRoot "modules"
 $localAppDataRoot = Join-Path $resolvedOutputRoot "localappdata"
 New-Item -ItemType Directory -Force $moduleRoot, $localAppDataRoot | Out-Null
 
-try {
-  Install-PackageProvider `
-    -Name NuGet `
-    -MinimumVersion 2.8.5.201 `
-    -Force `
-    -Scope CurrentUser | Out-Null
-} catch {
-  Write-Warning "NuGet provider bootstrap failed; Save-Module will verify whether it is needed: $($_.Exception.Message)"
-}
-
 Save-Module `
   -Name TrustedSigning `
   -RequiredVersion $trustedSigningVersion `
@@ -45,10 +35,27 @@ if ([string]$moduleMetadata.CompanyName -ne "Microsoft") {
 
 $catalogPath = Join-Path (Split-Path $moduleManifest) "catalog.cat"
 $catalogResult = Test-FileCatalog `
+  -Detailed `
   -Path (Split-Path $moduleManifest) `
   -CatalogFilePath $catalogPath
 if ([string]$catalogResult.Status -ne "Valid") {
   throw "TrustedSigning module catalog validation failed: $($catalogResult.Status)"
+}
+if ($null -eq $catalogResult.Signature) {
+  throw "TrustedSigning module catalog validation returned no signature."
+}
+if ($catalogResult.Signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+  throw "TrustedSigning module catalog signature is invalid: $($catalogResult.Signature.Status)"
+}
+if ($null -eq $catalogResult.Signature.SignerCertificate) {
+  throw "TrustedSigning module catalog validation returned no signer certificate."
+}
+$catalogSigner = $catalogResult.Signature.SignerCertificate.GetNameInfo(
+  [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+  $false
+)
+if ($catalogSigner -ne "Microsoft Corporation") {
+  throw "Unexpected TrustedSigning module catalog signer: $catalogSigner"
 }
 
 $env:LOCALAPPDATA = $localAppDataRoot
