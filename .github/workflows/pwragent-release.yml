@@ -2,6 +2,12 @@ name: Build PwrAgent Grok distribution
 
 on:
   workflow_dispatch:
+  pull_request:
+    types:
+      - labeled
+      - reopened
+      - synchronize
+      - unlabeled
   push:
     tags:
       - "pwragent-v*"
@@ -12,11 +18,14 @@ permissions:
 
 concurrency:
   group: pwragent-grok-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   metadata:
     name: Resolve release metadata
+    if: >-
+      github.event_name != 'pull_request'
+      || contains(github.event.pull_request.labels.*.name, 'ci:release-signing')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -247,7 +256,10 @@ jobs:
 
   macos-sign:
     name: Sign macOS universal binary
-    if: startsWith(github.ref, 'refs/tags/pwragent-v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/pwragent-v')
+      || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
       - metadata
       - macos-universal
@@ -395,6 +407,10 @@ jobs:
         shell: bash
         run: cargo build -p xai-grok-pager-bin --release --features release-dist
 
+      - name: Prepare pinned TrustedSigning client
+        shell: pwsh -NoProfile -NonInteractive -File {0}
+        run: ./scripts/release/prepare-trusted-signing.ps1 -OutputRoot signing-tools
+
       - name: Stage Windows distribution
         shell: pwsh
         run: |
@@ -416,7 +432,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $archive = Join-Path $env:RUNNER_TEMP "windows-release-signing-input.tgz"
-          & tar.exe -czf $archive stage/windows-x86_64 scripts/release
+          & tar.exe -czf $archive stage/windows-x86_64 signing-tools scripts/release
           if ($LASTEXITCODE -ne 0) {
             throw "Failed to archive Windows signing input (exit code $LASTEXITCODE)."
           }
@@ -454,7 +470,10 @@ jobs:
 
   windows-sign:
     name: Authenticode-sign Windows x64 binary
-    if: startsWith(github.ref, 'refs/tags/pwragent-v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/pwragent-v')
+      || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
       - metadata
       - windows-prepare
@@ -495,10 +514,6 @@ jobs:
             throw "Failed to expand Windows signing input (exit code $LASTEXITCODE)."
           }
 
-      - name: Install TrustedSigning
-        shell: pwsh -NoProfile -NonInteractive -File {0}
-        run: ./scripts/release/install-trusted-signing.ps1
-
       - name: Sign and verify Windows binary
         shell: pwsh -NoProfile -NonInteractive -File {0}
         env:
@@ -509,7 +524,10 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-        run: ./scripts/release/sign-windows-binary.ps1 -BinaryPath stage/windows-x86_64/grok.exe
+        run: >-
+          ./scripts/release/sign-windows-binary.ps1
+          -BinaryPath stage/windows-x86_64/grok.exe
+          -SigningToolsRoot signing-tools
 
       - name: Package signed Windows distribution
         shell: pwsh
@@ -528,9 +546,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/pwragent-v')
+  release-candidate:
+    name: Assemble signed release candidate
+    if: >-
+      startsWith(github.ref, 'refs/tags/pwragent-v')
+      || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
       - metadata
       - build
@@ -538,7 +559,7 @@ jobs:
       - windows-sign
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
       id-token: none
     steps:
       - name: Download release assets
@@ -556,6 +577,31 @@ jobs:
           mapfile -t assets < <(find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort)
           test "${#assets[@]}" -eq 4
           sha256sum "${assets[@]}" > SHA256SUMS
+
+      - name: Upload signed release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-release-candidate
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/pwragent-v')
+    needs:
+      - metadata
+      - release-candidate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: none
+    steps:
+      - name: Download signed release candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signed-release-candidate
+          path: dist
 
       - name: Publish immutable release assets
         env:

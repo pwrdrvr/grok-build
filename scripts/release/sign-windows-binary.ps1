@@ -1,10 +1,14 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$BinaryPath
+  [string]$BinaryPath,
+
+  [Parameter(Mandatory = $true)]
+  [string]$SigningToolsRoot
 )
 
 $ErrorActionPreference = "Stop"
 $expectedPublisher = "PwrDrvr LLC"
+$trustedSigningVersion = "0.5.8"
 
 $requiredEnvironment = [ordered]@{
   WIN_AZURE_SIGN_PUBLISHER_NAME = $env:WIN_AZURE_SIGN_PUBLISHER_NAME
@@ -28,7 +32,75 @@ if ($env:WIN_AZURE_SIGN_PUBLISHER_NAME -ne $expectedPublisher) {
 }
 
 $resolvedBinary = (Resolve-Path -LiteralPath $BinaryPath).Path
-Import-Module TrustedSigning -MinimumVersion 0.5.0 -ErrorAction Stop
+$resolvedSigningToolsRoot = (Resolve-Path -LiteralPath $SigningToolsRoot).Path
+$moduleManifest = Join-Path `
+  $resolvedSigningToolsRoot `
+  "modules/TrustedSigning/$trustedSigningVersion/TrustedSigning.psd1"
+$env:LOCALAPPDATA = Join-Path $resolvedSigningToolsRoot "localappdata"
+$checksumManifest = Join-Path $resolvedSigningToolsRoot "SHA256SUMS"
+if (-not (Test-Path -LiteralPath $moduleManifest)) {
+  throw "Pinned TrustedSigning module is missing: $moduleManifest"
+}
+if (-not (Test-Path -LiteralPath $checksumManifest)) {
+  throw "Pinned TrustedSigning checksum manifest is missing."
+}
+
+$rootPrefix = $resolvedSigningToolsRoot.TrimEnd(
+  [System.IO.Path]::DirectorySeparatorChar,
+  [System.IO.Path]::AltDirectorySeparatorChar
+) + [System.IO.Path]::DirectorySeparatorChar
+$verifiedPaths = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($line in Get-Content -LiteralPath $checksumManifest) {
+  if ($line -notmatch '^([a-f0-9]{64})  (.+)$') {
+    throw "Malformed TrustedSigning checksum entry: $line"
+  }
+  $expectedSha256 = $Matches[1]
+  $relativePath = $Matches[2].Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+  $fullPath = [System.IO.Path]::GetFullPath(
+    (Join-Path $resolvedSigningToolsRoot $relativePath)
+  )
+  if (-not $fullPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "TrustedSigning checksum path escapes the prepared root: $relativePath"
+  }
+  if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+    throw "Prepared TrustedSigning file is missing: $relativePath"
+  }
+  $actualSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $fullPath).Hash.ToLowerInvariant()
+  if ($actualSha256 -ne $expectedSha256) {
+    throw "Prepared TrustedSigning checksum mismatch for $relativePath."
+  }
+  if (-not $verifiedPaths.Add($fullPath)) {
+    throw "Duplicate TrustedSigning checksum entry: $relativePath"
+  }
+}
+
+$preparedFiles = @(
+  Get-ChildItem -LiteralPath $resolvedSigningToolsRoot -File -Recurse |
+    Where-Object { $_.FullName -ne $checksumManifest }
+)
+if ($preparedFiles.Count -ne $verifiedPaths.Count) {
+  throw "TrustedSigning input contains files not covered by SHA256SUMS."
+}
+foreach ($preparedFile in $preparedFiles) {
+  if (-not $verifiedPaths.Contains($preparedFile.FullName)) {
+    throw "TrustedSigning input file is not covered by SHA256SUMS: $($preparedFile.FullName)"
+  }
+}
+
+foreach ($dependencyRoot in @(
+  "Microsoft.Windows.SDK.BuildTools/Microsoft.Windows.SDK.BuildTools.10.0.26100.4188",
+  "Microsoft.Trusted.Signing.Client/Microsoft.Trusted.Signing.Client.1.0.95",
+  "sign/sign.0.9.1-beta.24469.1"
+)) {
+  $dependencyPath = Join-Path $env:LOCALAPPDATA "TrustedSigning/$dependencyRoot"
+  if (-not (Test-Path -LiteralPath $dependencyPath -PathType Container)) {
+    throw "Pinned TrustedSigning dependency is missing: $dependencyPath"
+  }
+}
+
+Import-Module $moduleManifest -Force -ErrorAction Stop
 
 $signingParameters = @{
   Endpoint = $env:WIN_AZURE_SIGN_ENDPOINT
@@ -43,7 +115,7 @@ Invoke-TrustedSigning @signingParameters
 
 $signature = Get-AuthenticodeSignature -LiteralPath $resolvedBinary
 if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-  throw "Authenticode verification failed for $resolvedBinary: $($signature.Status) ($($signature.StatusMessage))"
+  throw "Authenticode verification failed for ${resolvedBinary}: $($signature.Status) ($($signature.StatusMessage))"
 }
 if ($null -eq $signature.SignerCertificate) {
   throw "Authenticode verification returned no signer certificate for $resolvedBinary."
