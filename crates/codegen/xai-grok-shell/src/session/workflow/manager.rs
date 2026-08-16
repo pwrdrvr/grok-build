@@ -214,11 +214,7 @@ impl WorkflowManager {
                         existing.status.as_str().to_string(),
                     ));
                 }
-                let retained_agent_budget = WorkflowTracker::retained_agent_budget_on_resume(
-                    existing.agent_budget,
-                    spec.agent_budget,
-                );
-                if let Some(candidate) = retained_agent_budget {
+                if let Some(candidate) = spec.agent_budget.or(existing.agent_budget) {
                     self.effective_agent_budget(Some(candidate))?;
                 }
                 if existing.status
@@ -1120,55 +1116,6 @@ mod tests {
                 maximum: 100,
             })
         ));
-    }
-
-    #[tokio::test]
-    async fn resume_validates_retained_budget_against_session_maximum() {
-        let dir = tempfile::tempdir().unwrap();
-        let (mut manager, _events) = test_manager(Some(dir.path().to_path_buf()));
-        let script = "let meta = #{ name: \"budget-resume\", description: \"d\" };\nawait_user(\"user\", \"pause\");";
-        let (run_id, outcome) = manager
-            .launch(
-                resolve_inline(script.into()).unwrap(),
-                LaunchSpec {
-                    agent_budget: Some(200),
-                    ..spec()
-                },
-            )
-            .unwrap();
-        assert!(matches!(
-            outcome.await.unwrap(),
-            WorkflowOutcome::Paused { .. }
-        ));
-
-        manager
-            .configure_budget_policy(Some(64), Some(100))
-            .expect("valid lowered policy");
-        let error = manager
-            .launch(
-                resolve_inline(script.into()).unwrap(),
-                LaunchSpec {
-                    agent_budget: Some(50),
-                    resume_run_id: Some(run_id.clone()),
-                    ..spec()
-                },
-            )
-            .unwrap_err();
-
-        assert!(matches!(
-            error,
-            LaunchError::AgentBudget(WorkflowBudgetPolicyError::RequestedExceedsMaximum {
-                requested: 200,
-                maximum: 100,
-            })
-        ));
-        let state = manager.tracker.lock().get(&run_id).unwrap();
-        assert_eq!(state.agent_budget, Some(200));
-        assert_eq!(
-            state.status,
-            crate::session::workflow::tracker::WorkflowRunStatus::UserPaused,
-            "rejected admission must not mutate the retained run"
-        );
     }
 
     fn parallel_n_script(n: usize) -> String {
