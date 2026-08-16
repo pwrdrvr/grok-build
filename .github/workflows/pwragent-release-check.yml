@@ -35,3 +35,22 @@ jobs:
 
       - name: Validate fail-closed signing workflow
         run: python3 scripts/check-release-signing.py
+
+  trusted-signing-preparation:
+    name: Prepare TrustedSigning client
+    runs-on: windows-2022
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          persist-credentials: false
+
+      - name: Download and validate pinned signing client
+        shell: pwsh -NoProfile -NonInteractive -File {0}
+        run: >-
+          ./scripts/release/prepare-trusted-signing.ps1
+          -OutputRoot $env:RUNNER_TEMP/signing-tools
