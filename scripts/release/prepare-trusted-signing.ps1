@@ -40,7 +40,16 @@ $catalogResult = Test-FileCatalog `
   -Path (Split-Path $moduleManifest) `
   -CatalogFilePath $catalogPath
 if ([string]$catalogResult.Status -ne "Valid") {
-  throw "TrustedSigning module catalog validation failed: $($catalogResult.Status)"
+  $catalogKeys = @($catalogResult.CatalogItems.Keys)
+  $pathKeys = @($catalogResult.PathItems.Keys)
+  $mismatches = foreach ($key in @($catalogKeys + $pathKeys | Sort-Object -Unique)) {
+    $catalogHash = [string]$catalogResult.CatalogItems[$key]
+    $pathHash = [string]$catalogResult.PathItems[$key]
+    if ($catalogHash -ne $pathHash) {
+      "$key (catalog=$catalogHash, path=$pathHash)"
+    }
+  }
+  throw "TrustedSigning module catalog validation failed: $($catalogResult.Status); $($mismatches -join '; ')"
 }
 if ($null -eq $catalogResult.Signature) {
   throw "TrustedSigning module catalog validation returned no signature."
