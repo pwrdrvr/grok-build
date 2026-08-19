@@ -1,140 +1,108 @@
-<div align="center">
+# Grok Build — PwrAgent downstream fork
 
-<h1>
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://media.x.ai/v1/website/spacexai-symbol-white-transparent-0c31957f.png">
-    <source media="(prefers-color-scheme: light)" srcset="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png">
-    <img alt="SpaceXAI logo" src="https://media.x.ai/v1/website/spacexai-symbol-black-transparent-6435cf42.png" width="96">
-  </picture>
-  <br>
-  Grok Build (<code>grok</code>)
-</h1>
+This is **not** the upstream Grok Build repository. It is PwrDrvr's downstream
+fork of [`xai-org/grok-build`](https://github.com/xai-org/grok-build), and its
+default branch is `pwragent`.
 
-**Grok Build** is SpaceXAI's terminal-based AI coding agent. It runs as a
-full-screen TUI that understands your codebase, edits files, executes shell
-commands, searches the web, and manages long-running tasks — interactively,
-headlessly for scripting/CI, or embedded in editors via the Agent Client
-Protocol (ACP).
+## Why this repo exists
 
-[Installing the released binary](#installing-the-released-binary) ·
-[Building from source](#building-from-source) ·
-[Documentation](#documentation) ·
-[Repository layout](#repository-layout) ·
-[Development](#development) ·
-[Contributing](#contributing) ·
-[License](#license)
+[PwrAgent](https://github.com/pwrdrvr/PwrAgent) drives coding agents from chat
+apps (Telegram, Discord, Slack, Mattermost, Feishu/Lark, LINE) and talks to
+them over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP).
+Grok Build is one of those agent backends.
 
-![Grok Build TUI](https://media.x.ai/v1/website/universe-tui-screenshot-6f7a0837.png)
+Making Grok Build work well as a PwrAgent backend needed changes the upstream
+tree didn't have at the time:
 
-**Learn more about Grok Build at [x.ai/cli](https://x.ai/cli)**
+- **ACP features PwrAgent depends on** — mid-turn steering, session-scoped
+  workflow budgets, and tool updates carrying enough metadata for a remote
+  client to render them.
+- **Startup and resume performance** — every chat message PwrAgent relays waits
+  on a cold `session/load`, so seconds of unused TLS/HTTP client setup were
+  directly visible to users.
+- **A distributable, signed build** — PwrAgent ships Grok Build as a bundled
+  runtime on macOS, Linux, and Windows, which upstream does not publish in a
+  form PwrAgent can redistribute.
 
-This repository contains the Rust source for the `grok` CLI/TUI and its agent
-runtime. It is synced periodically from the SpaceXAI monorepo.
+Upstream is an export of an internal xAI monorepo and
+[does not accept external patches](CONTRIBUTING.md), so these changes live here
+and are rebased onto each upstream sync. `origin/main` tracks the upstream
+source line unchanged; `pwragent` is the maintained downstream branch.
 
-A small `SOURCE_REV` file at the root records the full monorepo commit SHA
-for the version of the code present in this tree.
+## What this fork changes
 
-</div>
+### ACP functionality
 
----
+| Change | Summary |
+|---|---|
+| [#7](https://github.com/pwrdrvr/grok-build/pull/7) | Adds `x.ai/session/steer` for mid-turn steering of a resident session (reporting whether text lands in the current or next turn) and `x.ai/session/workflow_budget` for session-scoped workflow child-agent limits. |
+| [#6](https://github.com/pwrdrvr/grok-build/pull/6) | Keeps the human-readable title, kind, and arguments on completed tool updates, so ACP clients render real labels instead of placeholder rows. Consumer side: [PwrAgent#1525](https://github.com/pwrdrvr/PwrAgent/pull/1525). |
 
-## Installing the released binary
+### Performance
 
-Prebuilt binaries are published for macOS, Linux, and Windows:
+| Change | Summary |
+|---|---|
+| [#4](https://github.com/pwrdrvr/grok-build/pull/4) | Defers the five tool HTTP clients until first use and caches native TLS roots once per process — host-observed ACP `session/load` restore dropped from 856 ms to 171 ms (5×) in matched release builds. |
+| [#5](https://github.com/pwrdrvr/grok-build/pull/5) | Fetches the model catalog and `/v1/settings` concurrently during cold-start prefetch, cutting ~40 ms from spawn-to-ACP-initialize. |
 
-```sh
-curl -fsSL https://x.ai/cli/install.sh | bash   # macOS / Linux / Git Bash
-irm https://x.ai/cli/install.ps1 | iex          # Windows PowerShell
-grok --version
-```
+The two performance changes also exist as standalone, upstream-shaped PRs
+against this fork's untouched `main` mirror, with isolated measurements and
+reproduction steps:
+[#2](https://github.com/pwrdrvr/grok-build/pull/2) (lazy tool HTTP clients),
+[#1](https://github.com/pwrdrvr/grok-build/pull/1) (cached native TLS roots),
+and [#3](https://github.com/pwrdrvr/grok-build/pull/3) (the two combined, with
+the end-to-end ACP restore benchmark).
 
-See the [changelog](https://x.ai/build/changelog) for the latest fixes,
-features, and improvements in each release.
+### Distribution and release signing
 
-## Building from source
+| Change | Summary |
+|---|---|
+| [#8](https://github.com/pwrdrvr/grok-build/pull/8) | Splits release builds into unprivileged build jobs and protected signing jobs: Developer ID signing for the macOS universal binary, Azure Artifact Signing for Windows x64, digests carried across both boundaries, plus a label-gated signing test that cannot publish a release. |
+| [#9](https://github.com/pwrdrvr/grok-build/pull/9) | Fixes the signing-tool checksum manifest to cover hidden files and report the exact uncovered paths on mismatch. |
 
-Requirements:
+Earlier downstream commits landed directly on `pwragent` before the PR flow
+was in place:
 
-- **Rust** — the toolchain is pinned by [`rust-toolchain.toml`](rust-toolchain.toml);
-  `rustup` installs it automatically on first build.
-- **[DotSlash](https://dotslash-cli.com)** — required so hermetic tools under
-  [`bin/`](bin/) (notably [`bin/protoc`](bin/protoc)) can download and run.
-  Install it and ensure `dotslash` is on your `PATH` **before** building:
+| Commit | Summary |
+|---|---|
+| [`4796c4a`](https://github.com/pwrdrvr/grok-build/commit/4796c4a) | Adds the PwrAgent ACP distribution: release workflow, archive layout, and provenance for the four supported targets. |
+| [`cad78a8`](https://github.com/pwrdrvr/grok-build/commit/cad78a8) | Marks downstream releases as prereleases so they never look like official xAI builds. |
+| [`9a498d4`](https://github.com/pwrdrvr/grok-build/commit/9a498d4) | Pins the release build toolchain. |
+| [`df85fb6`](https://github.com/pwrdrvr/grok-build/commit/df85fb6), [`15dff34`](https://github.com/pwrdrvr/grok-build/commit/15dff34) | Makes proto codegen work on Windows CI without DotSlash. |
+| [`f6e5c5c`](https://github.com/pwrdrvr/grok-build/commit/f6e5c5c) | Works around the MSVC PDB linker limit in release builds. |
+| [`87272ef`](https://github.com/pwrdrvr/grok-build/commit/87272ef) | Fixes the macOS universal-binary architecture check. |
 
-  ```sh
-  cargo install dotslash
-  # or: prebuilt packages — https://dotslash-cli.com/docs/installation/
-  /usr/bin/env dotslash --help   # sanity check
-  ```
+## Releases
 
-- **protoc** — proto codegen resolves [`bin/protoc`](bin/protoc) via DotSlash,
-  or falls back to a `protoc` on `PATH` / `$PROTOC`.
-- macOS and Linux are supported build hosts; Windows builds are best-effort
-  and not currently tested from this tree.
+Downstream builds are published as prereleases tagged
+`pwragent-v<upstream-version>-pwragent.<n>` — macOS universal, Linux x86_64,
+Linux aarch64, and Windows x64 archives plus `SHA256SUMS`. See
+[`docs/pwragent-distribution.md`](docs/pwragent-distribution.md) for the
+release process, signing boundaries, and target rationale.
 
-```sh
-cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
-cargo check -p xai-grok-pager-bin            # fast validation
-```
+For where this fork stands against stable ACP v1 — what's supported, what's an
+`x.ai/*` extension, and what PwrAgent actually consumes — see
+[`docs/acp-compatibility.md`](docs/acp-compatibility.md).
 
-The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
-[authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
+## Using Grok Build itself
 
-## Documentation
+This README covers the fork. For the product — what Grok Build is, installing
+the official binary, building from source, the user guide, and repository
+layout — see the
+[upstream README](https://github.com/xai-org/grok-build/blob/main/README.md)
+and [docs.x.ai/build/overview](https://docs.x.ai/build/overview).
 
-Full online documentation is available at
-[docs.x.ai/build/overview](https://docs.x.ai/build/overview).
-
-The user guide ships with the pager crate:
-[`crates/codegen/xai-grok-pager/docs/user-guide/`](crates/codegen/xai-grok-pager/docs/user-guide/)
-— getting started, keyboard shortcuts, slash commands, configuration, theming,
-MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
-
-## Repository layout
-
-| Path | Contents |
-|------|----------|
-| `crates/codegen/xai-grok-pager-bin` | Composition-root package; builds the `xai-grok-pager` binary |
-| `crates/codegen/xai-grok-pager` | The TUI: scrollback, prompt, modals, rendering |
-| `crates/codegen/xai-grok-shell` | Agent runtime + leader/stdio/headless entry points |
-| `crates/codegen/xai-grok-tools` | Tool implementations (terminal, file edit, search, ...) |
-| `crates/codegen/xai-grok-workspace` | Host filesystem, VCS, execution, checkpoints |
-| `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |
-| `crates/common/`, `crates/build/`, `prod/mc/` | Small shared leaf crates pulled in by the closure |
-| `third_party/` | Vendored upstream source (Mermaid diagram stack) — see below |
-
-> [!IMPORTANT]
-> The root `Cargo.toml` (workspace members, dependency versions, lints,
-> profiles) is **generated** — treat it as read-only. Prefer editing per-crate
-> `Cargo.toml` files.
-
-## Development
-
-```sh
-cargo check -p <crate>        # always target specific crates; full-workspace builds are slow
-cargo test -p xai-grok-config # per-crate tests
-cargo clippy -p <crate>       # lint config: clippy.toml at the repo root
-cargo fmt --all               # rustfmt.toml at the repo root
-```
+`SOURCE_REV` records the upstream monorepo commit this tree was synced from.
 
 ## Contributing
 
-> [!NOTE]
-> External contributions are not accepted. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+This fork exists to serve PwrAgent; it is not a general-purpose distribution of
+Grok Build. Upstream does not accept external patches — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## License
 
-First-party code in this repository is licensed under the **Apache License,
-Version 2.0** — see [`LICENSE`](LICENSE).
-
-Third-party and vendored code remains under its original licenses. See:
-
-- [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) — crates.io / git dependencies,
-  bundled UI themes, and **in-tree source ports** (including openai/codex and
-  sst/opencode tool implementations)
-- [`crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md`](crates/codegen/xai-grok-tools/THIRD_PARTY_NOTICES.md)
-  — crate-local notice for the codex and opencode ports (license texts +
-  Apache §4(b) change notice)
-- [`third_party/NOTICE`](third_party/NOTICE) — vendored Mermaid-stack index
+First-party code remains under the **Apache License, Version 2.0** — see
+[`LICENSE`](LICENSE). Third-party and vendored code remains under its original
+licenses; see [`THIRD-PARTY-NOTICES`](THIRD-PARTY-NOTICES) and
+[`third_party/NOTICE`](third_party/NOTICE).
