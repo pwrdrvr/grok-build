@@ -122,7 +122,7 @@ failed mailbox write.
 
 ## Session workflow-budget extension
 
-Grok 1.0.4 has no standard ACP config option for workflow `agent_budget`.
+Grok's ACP surface has no standard config option for workflow `agent_budget`.
 The logical extension `x.ai/session/workflow_budget` (raw wire method
 `_x.ai/session/workflow_budget`) reads or partially updates the resident
 session policy:
