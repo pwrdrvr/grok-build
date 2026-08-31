@@ -49,12 +49,17 @@ xAI releases:
 ```sh
 git switch pwragent
 git fetch origin main
-git merge --ff-only origin/main
-# Reapply or merge the small downstream patch stack when a fast-forward is not possible.
+# Preserve the old downstream tip, then replay the downstream patch stack on
+# origin/main after auditing for patches that upstream has superseded.
+git branch backup/pwragent-pre-rebase
+git rebase --onto origin/main "$(git merge-base origin/main pwragent)" pwragent
 
-git tag -s pwragent-v0.2.112-pwragent.1 -m "PwrAgent Grok 0.2.112-pwragent.1"
+upstream_version=1.0.12
+revision=1
+tag="pwragent-v${upstream_version}-pwragent.${revision}"
+git tag -s "$tag" -m "PwrAgent Grok ${upstream_version}-pwragent.${revision}"
 git push pwrdrvr pwragent
-git push pwrdrvr pwragent-v0.2.112-pwragent.1
+git push pwrdrvr "$tag"
 ```
 
 Tag pushes build all targets, pause at the protected signing environments, and
