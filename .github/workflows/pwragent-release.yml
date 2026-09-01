@@ -9,6 +9,8 @@ on:
       - synchronize
       - unlabeled
   push:
+    branches:
+      - pwragent
     tags:
       - "pwragent-v*"
 
@@ -177,7 +179,12 @@ jobs:
           retention-days: 7
 
       - name: Upload Linux release asset
-        if: runner.os == 'Linux'
+        if: >-
+          runner.os == 'Linux'
+          && ((github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing')))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-${{ matrix.platform }}
@@ -185,8 +192,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Upload unsigned Linux development artifact
+        if: >-
+          runner.os == 'Linux'
+          && (github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent'))
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: unsigned-${{ matrix.platform }}
+          path: ${{ matrix.release_asset }}
+          if-no-files-found: error
+          retention-days: 7
+
   macos-universal:
-    name: Prepare macOS universal signing input
+    name: Prepare macOS universal distribution
     needs:
       - metadata
       - build
@@ -232,6 +252,11 @@ jobs:
 
       - name: Archive macOS signing input
         id: archive
+        if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
         shell: bash
         run: |
           set -euo pipefail
@@ -243,6 +268,11 @@ jobs:
             > "$RUNNER_TEMP/macos-release-signing-input.tgz.sha256"
 
       - name: Upload macOS signing input
+        if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: macos-release-signing-input
@@ -252,15 +282,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Package unsigned manual-dispatch artifact
-        if: github.event_name == 'workflow_dispatch'
+      - name: Package unsigned development artifact
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent')
         env:
           GROK_VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
         run: tar -C stage -czf "pwragent-grok-${GROK_VERSION}-macos-universal-unsigned.tar.gz" .
 
-      - name: Upload unsigned manual-dispatch artifact
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload unsigned development artifact
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unsigned-macos-universal
@@ -271,7 +307,8 @@ jobs:
   macos-sign:
     name: Sign macOS universal binary
     if: >-
-      startsWith(github.ref, 'refs/tags/pwragent-v')
+      (github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v'))
       || (github.event_name == 'pull_request'
       && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
@@ -377,7 +414,7 @@ jobs:
           retention-days: 7
 
   windows-prepare:
-    name: Prepare Windows signing input
+    name: Prepare Windows distribution
     needs: metadata
     runs-on: windows-2022
     timeout-minutes: 90
@@ -422,6 +459,11 @@ jobs:
         run: cargo build -p xai-grok-pager-bin --release --features release-dist
 
       - name: Prepare pinned TrustedSigning client
+        if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
         shell: pwsh -NoProfile -NonInteractive -File {0}
         run: ./scripts/release/prepare-trusted-signing.ps1 -OutputRoot signing-tools
 
@@ -442,6 +484,11 @@ jobs:
 
       - name: Archive Windows signing input
         id: archive
+        if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -456,6 +503,11 @@ jobs:
             Set-Content -Path "$archive.sha256" -Encoding ascii
 
       - name: Upload Windows signing input
+        if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-release-signing-input
@@ -465,16 +517,22 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Package unsigned manual-dispatch artifact
-        if: github.event_name == 'workflow_dispatch'
+      - name: Package unsigned development artifact
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent')
         shell: pwsh
         run: >-
           Compress-Archive
           -Path "stage/windows-x86_64/*"
           -DestinationPath "pwragent-grok-$env:GROK_VERSION-windows-x86_64-unsigned.zip"
 
-      - name: Upload unsigned manual-dispatch artifact
-        if: github.event_name == 'workflow_dispatch'
+      - name: Upload unsigned development artifact
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: unsigned-windows-x86_64
@@ -485,7 +543,8 @@ jobs:
   windows-sign:
     name: Authenticode-sign Windows x64 binary
     if: >-
-      startsWith(github.ref, 'refs/tags/pwragent-v')
+      (github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v'))
       || (github.event_name == 'pull_request'
       && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
@@ -563,7 +622,8 @@ jobs:
   release-candidate:
     name: Assemble signed release candidate
     if: >-
-      startsWith(github.ref, 'refs/tags/pwragent-v')
+      (github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v'))
       || (github.event_name == 'pull_request'
       && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))
     needs:
@@ -602,7 +662,9 @@ jobs:
 
   release:
     name: Publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/pwragent-v')
+    if: >-
+      github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v')
     needs:
       - metadata
       - release-candidate
