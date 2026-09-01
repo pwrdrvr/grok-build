@@ -99,9 +99,11 @@ signing:
    label-gated signing rehearsal, it downloads the exact `TrustedSigning` 0.5.8
    module plus its pinned signing-client dependencies, validates the Microsoft
    module catalog, records a per-file checksum manifest, and archives all of
-   that without an environment or credentials. It exports the complete archive
-   SHA-256. Branch and manual builds skip signing-client preparation and package
-   only the unsigned staged distribution.
+   that without an environment or credentials. If `PSGallery` is absent, the
+   preparer registers PowerShellGet's default repository, then requires the
+   official HTTPS source and NuGet provider before downloading anything. It
+   exports the complete archive SHA-256. Branch and manual builds skip
+   signing-client preparation and package only the unsigned staged distribution.
 4. The `windows-sign` job is gated by the `windows-signing` GitHub Environment.
    It does not check out source or run project dependency installation. It
    verifies the complete prepared archive and the nested signing-tool checksum
