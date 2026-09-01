@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/pwragent-release*.yml"
+      - ".github/workflows/pwragent-trusted-signing-check.yml"
       - "docs/pwragent-distribution.md"
       - "scripts/check-release-signing.py"
       - "scripts/release/**"
@@ -12,6 +13,7 @@ on:
       - pwragent
     paths:
       - ".github/workflows/pwragent-release*.yml"
+      - ".github/workflows/pwragent-trusted-signing-check.yml"
       - "docs/pwragent-distribution.md"
       - "scripts/check-release-signing.py"
       - "scripts/release/**"
@@ -35,41 +37,3 @@ jobs:
 
       - name: Validate fail-closed signing workflow
         run: python3 scripts/check-release-signing.py
-
-  trusted-signing-preparation:
-    name: Prepare TrustedSigning client
-    runs-on: windows-2022
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      id-token: none
-    steps:
-      - name: Check out source
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
-        with:
-          persist-credentials: false
-
-      - name: Download and validate pinned signing client
-        shell: pwsh -NoProfile -NonInteractive -File {0}
-        run: >-
-          ./scripts/release/prepare-trusted-signing.ps1
-          -OutputRoot $env:RUNNER_TEMP/signing-tools
-
-      - name: Verify signing client after archive round-trip
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $archive = Join-Path $env:RUNNER_TEMP "signing-tools.tgz"
-          $expandedRoot = Join-Path $env:RUNNER_TEMP "signing-tools-roundtrip"
-          & tar.exe -czf $archive -C $env:RUNNER_TEMP signing-tools
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to archive prepared signing tools (exit code $LASTEXITCODE)."
-          }
-          New-Item -ItemType Directory -Force $expandedRoot | Out-Null
-          & tar.exe -xzf $archive -C $expandedRoot
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to expand prepared signing tools (exit code $LASTEXITCODE)."
-          }
-          & ./scripts/release/verify-trusted-signing-tools.ps1 `
-            -SigningToolsRoot (Join-Path $expandedRoot "signing-tools") |
-            Out-Null

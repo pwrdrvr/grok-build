@@ -31,6 +31,15 @@ Each archive contains the renamed `grok` executable, Apache 2.0 license,
 third-party notices, upstream `SOURCE_REV`, and downstream build provenance.
 The release also includes `SHA256SUMS`.
 
+Every ordinary push to `pwragent` builds the full platform set with a
+`<upstream-version>-pwragent.dev.<run-number>` version. Their distributable
+outputs are seven-day `unsigned-*` workflow artifacts: Linux archives, a
+universal macOS archive whose filename also ends in `-unsigned`, and a Windows
+archive whose filename also ends in `-unsigned`. Short-lived raw per-architecture
+macOS artifacts feed the universal merge within the same run. Branch builds do
+not prepare release signing-input archives, enter a protected signing
+environment, assemble a signed release candidate, or publish a GitHub Release.
+
 Release-tag builds sign the universal macOS executable with PwrDrvr LLC's
 Developer ID Application identity and Authenticode-sign the Windows x64
 executable with PwrDrvr LLC's Azure Artifact Signing certificate before either
@@ -64,29 +73,35 @@ git push pwrdrvr "$tag"
 
 Tag pushes build all targets, pause at the protected signing environments, and
 create the GitHub Release only after both protected jobs have verified their
-signatures. A manual workflow dispatch builds the same matrix as
-short-retention workflow artifacts without using signing credentials or
-publishing a release. Its macOS and Windows artifact names include `unsigned`
-so they cannot be confused with release payloads.
+signatures. Ordinary `pwragent` pushes and manual workflow dispatches build the
+same matrix as short-retention `unsigned-*` workflow artifacts without
+preparing release signing-input archives, using signing credentials, or
+publishing a release. Their development versions include `pwragent.dev`; their
+macOS and Windows archive filenames additionally include `unsigned` so they
+cannot be confused with release payloads.
 
 ## Release signing trust boundary
 
 The workflow deliberately separates untrusted compilation from credentialed
 signing:
 
-1. macOS arm64 and x86_64 jobs build without secrets. A no-secret job merges
-   them into one universal binary, archives the signing input, and exports its
-   SHA-256 digest.
+1. macOS arm64 and x86_64 jobs build without secrets. For a release tag or
+   label-gated signing rehearsal, a no-secret job merges them into one universal
+   binary, archives the signing input, and exports its SHA-256 digest. Branch
+   and manual builds package the merged binary directly as an unsigned
+   development artifact instead.
 2. The `macos-sign` job is gated by the `apple-signing` GitHub Environment. It
    does not check out source. It downloads and verifies the exact prepared
    archive, imports the Developer ID certificate into an ephemeral keychain,
    applies a hardened-runtime timestamped signature, and requires both
    `codesign --verify` and Team ID `T44CNHC4UH` before packaging.
-3. The `windows-prepare` job builds `grok.exe`, downloads the exact
-   `TrustedSigning` 0.5.8 module plus its pinned signing-client dependencies,
-   validates the Microsoft module catalog, records a per-file checksum
-   manifest, and archives all of that without an environment or credentials.
-   It exports the complete archive SHA-256.
+3. The `windows-prepare` job builds `grok.exe`. For a release tag or
+   label-gated signing rehearsal, it downloads the exact `TrustedSigning` 0.5.8
+   module plus its pinned signing-client dependencies, validates the Microsoft
+   module catalog, records a per-file checksum manifest, and archives all of
+   that without an environment or credentials. It exports the complete archive
+   SHA-256. Branch and manual builds skip signing-client preparation and package
+   only the unsigned staged distribution.
 4. The `windows-sign` job is gated by the `windows-signing` GitHub Environment.
    It does not check out source or run project dependency installation. It
    verifies the complete prepared archive and the nested signing-tool checksum
@@ -110,15 +125,19 @@ is never available to build jobs or manual-dispatch builds. Pull requests gain
 access only through the deliberately label-gated, environment-approved signing
 test described below.
 
-`scripts/check-release-signing.py` pins these workflow invariants. The
-`Check PwrAgent release signing` workflow runs it on relevant pull requests and
-changes to the downstream `pwragent` branch. A separate Windows job in that
-check downloads and validates the pinned TrustedSigning client and its
-dependencies without compiling Grok, entering a protected environment, or
-reading secrets. It archives and re-expands that bundle, then runs the same
-complete checksum verifier used by the protected signing job. This catches
-signing-tool preparation and archive-boundary failures before an expensive
-end-to-end release rehearsal.
+`scripts/check-release-signing.py` pins these workflow invariants. The cheap
+`Check PwrAgent release signing` workflow runs it for relevant pull requests and
+changes to the downstream `pwragent` branch, including documentation-only
+contract changes. The separate `Check PwrAgent TrustedSigning preparation`
+workflow runs only when the release workflow, its own workflow, or the
+TrustedSigning preparation/verification scripts change. Its Windows job
+downloads and validates the pinned TrustedSigning client and its dependencies
+without compiling Grok, entering a protected environment, or reading secrets.
+It archives and re-expands that bundle, then runs the same complete checksum
+verifier used by the protected signing job. This catches signing-tool
+preparation and archive-boundary failures before an expensive end-to-end
+release rehearsal without downloading the client for documentation-only
+changes.
 
 The raw Grok executable is Developer ID signed but is not submitted separately
 for Apple notarization. It is normally embedded during PwrAgent's no-secret

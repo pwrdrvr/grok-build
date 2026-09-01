@@ -9,6 +9,9 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release.yml"
 CHECK_WORKFLOW_PATH = ROOT / ".github/workflows/pwragent-release-check.yml"
+TRUSTED_SIGNING_CHECK_WORKFLOW_PATH = (
+    ROOT / ".github/workflows/pwragent-trusted-signing-check.yml"
+)
 WINDOWS_SIGNER_PATH = ROOT / "scripts/release/sign-windows-binary.ps1"
 WINDOWS_SIGNING_PREPARER_PATH = (
     ROOT / "scripts/release/prepare-trusted-signing.ps1"
@@ -30,6 +33,20 @@ def require(text: str, fragment: str, scope: str) -> None:
         fail(f"{scope} must contain {fragment!r}")
 
 
+def require_absent(text: str, fragment: str, scope: str) -> None:
+    if fragment in text:
+        fail(f"{scope} must not contain {fragment!r}")
+
+
+def require_count(text: str, fragment: str, expected: int, scope: str) -> None:
+    actual = text.count(fragment)
+    if actual != expected:
+        fail(
+            f"{scope} must contain {fragment!r} exactly {expected} times; "
+            f"found {actual}"
+        )
+
+
 def job(workflow: str, name: str) -> str:
     match = re.search(
         rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-z0-9][a-z0-9-]*:\n|\Z)",
@@ -40,8 +57,47 @@ def job(workflow: str, name: str) -> str:
     return match.group(0)
 
 
+def step(job_section: str, name: str) -> str:
+    match = re.search(
+        rf"(?ms)^      - name: {re.escape(name)}\n"
+        rf"(.*?)(?=^      - name: |\Z)",
+        job_section,
+    )
+    if match is None:
+        fail(f"workflow step {name!r} is missing")
+    return match.group(0)
+
+
+SIGNED_JOB_GUARD = """if: >-
+      (github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v'))
+      || (github.event_name == 'pull_request'
+      && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))"""
+SIGNED_STEP_GUARD = """if: >-
+          (github.event_name == 'push'
+          && startsWith(github.ref, 'refs/tags/pwragent-v'))
+          || (github.event_name == 'pull_request'
+          && contains(github.event.pull_request.labels.*.name, 'ci:release-signing'))"""
+UNSIGNED_EVENT_GUARD = """github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'push'
+          && github.ref == 'refs/heads/pwragent')"""
+UNSIGNED_STEP_GUARD = "if: >-\n          " + UNSIGNED_EVENT_GUARD
+RELEASE_JOB_GUARD = """if: >-
+      github.event_name == 'push'
+      && startsWith(github.ref, 'refs/tags/pwragent-v')"""
+METADATA_JOB_GUARD = """if: >-
+      github.event_name != 'pull_request'
+      || (contains(github.event.pull_request.labels.*.name, 'ci:release-signing')
+      && (github.event.action == 'synchronize'
+      || github.event.action == 'reopened'
+      || github.event.label.name == 'ci:release-signing'))"""
+
+
 workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 check_workflow = CHECK_WORKFLOW_PATH.read_text(encoding="utf-8")
+trusted_signing_check_workflow = TRUSTED_SIGNING_CHECK_WORKFLOW_PATH.read_text(
+    encoding="utf-8"
+)
 windows_signer = WINDOWS_SIGNER_PATH.read_text(encoding="utf-8")
 windows_signing_preparer = WINDOWS_SIGNING_PREPARER_PATH.read_text(encoding="utf-8")
 windows_signing_verifier = WINDOWS_SIGNING_VERIFIER_PATH.read_text(encoding="utf-8")
@@ -54,6 +110,16 @@ require(workflow, "pull_request:", "workflow")
 require(workflow, "- labeled", "workflow")
 require(workflow, "- synchronize", "workflow")
 require(workflow, "'ci:release-signing'", "workflow")
+require(
+    workflow,
+    'version="${upstream_version}-pwragent.dev.${GITHUB_RUN_NUMBER}"',
+    "development version",
+)
+require(
+    workflow,
+    'push:\n    branches:\n      - pwragent\n    tags:\n      - "pwragent-v*"',
+    "workflow branch and tag triggers",
+)
 for fragment in (
     "github.event.action == 'labeled' || github.event.action == 'unlabeled'",
     "github.event.label.name != 'ci:release-signing'",
@@ -64,12 +130,95 @@ for fragment in (
 ):
     require(workflow, fragment, "PR signing trigger guard")
 
+metadata = job(workflow, "metadata")
+build = job(workflow, "build")
 macos_prepare = job(workflow, "macos-universal")
 macos_sign = job(workflow, "macos-sign")
 windows_prepare = job(workflow, "windows-prepare")
 windows_sign = job(workflow, "windows-sign")
 release_candidate = job(workflow, "release-candidate")
 release = job(workflow, "release")
+
+metadata_preamble = metadata.split("\n    steps:", maxsplit=1)[0]
+require(metadata_preamble, METADATA_JOB_GUARD, "metadata job guard")
+for name, section in (
+    ("build", build),
+    ("macos-universal", macos_prepare),
+    ("windows-prepare", windows_prepare),
+):
+    preamble = section.split("\n    steps:", maxsplit=1)[0]
+    require_absent(preamble, "\n    if:", f"{name} job branch-build scope")
+
+linux_release_upload = step(build, "Upload Linux release asset")
+require(
+    linux_release_upload,
+    "runner.os == 'Linux'\n"
+    "          && ((github.event_name == 'push'\n"
+    "          && startsWith(github.ref, 'refs/tags/pwragent-v'))\n"
+    "          || (github.event_name == 'pull_request'\n"
+    "          && contains(github.event.pull_request.labels.*.name, "
+    "'ci:release-signing')))",
+    "Linux release artifact upload",
+)
+require(linux_release_upload, "name: release-${{ matrix.platform }}", "Linux release artifact")
+
+linux_unsigned_upload = step(build, "Upload unsigned Linux development artifact")
+require(linux_unsigned_upload, UNSIGNED_EVENT_GUARD, "unsigned Linux artifact upload")
+require(
+    linux_unsigned_upload,
+    "name: unsigned-${{ matrix.platform }}",
+    "unsigned Linux artifact upload",
+)
+
+for name, section in (
+    ("macos-sign", macos_sign),
+    ("windows-sign", windows_sign),
+    ("release-candidate", release_candidate),
+):
+    preamble = section.split("\n    steps:", maxsplit=1)[0]
+    require(preamble, SIGNED_JOB_GUARD, f"{name} job guard")
+
+release_preamble = release.split("\n    steps:", maxsplit=1)[0]
+require(release_preamble, RELEASE_JOB_GUARD, "release publication job guard")
+
+for name, section, step_names in (
+    (
+        "macos-universal",
+        macos_prepare,
+        ("Archive macOS signing input", "Upload macOS signing input"),
+    ),
+    (
+        "windows-prepare",
+        windows_prepare,
+        (
+            "Prepare pinned TrustedSigning client",
+            "Archive Windows signing input",
+            "Upload Windows signing input",
+        ),
+    ),
+):
+    for step_name in step_names:
+        require(step(section, step_name), SIGNED_STEP_GUARD, f"{step_name} guard")
+
+for name, section in (
+    ("macos-universal", macos_prepare),
+    ("windows-prepare", windows_prepare),
+):
+    unsigned_package = step(section, "Package unsigned development artifact")
+    require(
+        unsigned_package,
+        UNSIGNED_STEP_GUARD,
+        f"{name} unsigned package guard",
+    )
+    require(unsigned_package, "-unsigned", f"{name} unsigned package filename")
+    unsigned_upload = step(section, "Upload unsigned development artifact")
+    require(
+        unsigned_upload,
+        UNSIGNED_STEP_GUARD,
+        f"{name} unsigned upload guard",
+    )
+    require(unsigned_upload, "name: unsigned-", f"{name} unsigned artifact name")
+    require(unsigned_upload, "-unsigned", f"{name} unsigned artifact path")
 
 for name, section in (
     ("macos-universal", macos_prepare),
@@ -180,6 +329,40 @@ if "Install-PackageProvider" in windows_signing_preparer:
     fail("TrustedSigning preparer must not bootstrap the legacy NuGet provider")
 
 for fragment in (
+    '".github/workflows/pwragent-trusted-signing-check.yml"',
+    '"docs/pwragent-distribution.md"',
+    '"scripts/check-release-signing.py"',
+    '"scripts/release/**"',
+    "release-signing-contract:",
+    "run: python3 scripts/check-release-signing.py",
+    "id-token: none",
+):
+    require(check_workflow, fragment, "release signing contract check workflow")
+
+for fragment in (
+    '".github/workflows/pwragent-trusted-signing-check.yml"',
+    '"docs/pwragent-distribution.md"',
+    '"scripts/check-release-signing.py"',
+    '"scripts/release/**"',
+):
+    require_count(
+        check_workflow,
+        fragment,
+        2,
+        "release signing contract pull-request and push trigger scope",
+    )
+
+require_absent(
+    check_workflow,
+    "trusted-signing-preparation:",
+    "release signing contract check workflow",
+)
+
+for fragment in (
+    '".github/workflows/pwragent-release.yml"',
+    '".github/workflows/pwragent-trusted-signing-check.yml"',
+    '"scripts/release/prepare-trusted-signing.ps1"',
+    '"scripts/release/verify-trusted-signing-tools.ps1"',
     "trusted-signing-preparation:",
     "runs-on: windows-2022",
     "timeout-minutes: 10",
@@ -191,10 +374,48 @@ for fragment in (
     "scripts/release/verify-trusted-signing-tools.ps1",
     "id-token: none",
 ):
-    require(check_workflow, fragment, "release signing check workflow")
+    require(
+        trusted_signing_check_workflow,
+        fragment,
+        "TrustedSigning preparation check workflow",
+    )
 
-if "environment:" in check_workflow or "secrets." in check_workflow:
-    fail("release signing check workflow must not enter an environment or read secrets")
+for fragment in (
+    '".github/workflows/pwragent-release.yml"',
+    '".github/workflows/pwragent-trusted-signing-check.yml"',
+    '"scripts/release/prepare-trusted-signing.ps1"',
+    '"scripts/release/verify-trusted-signing-tools.ps1"',
+):
+    require_count(
+        trusted_signing_check_workflow,
+        fragment,
+        2,
+        "TrustedSigning pull-request and push trigger scope",
+    )
+require(
+    trusted_signing_check_workflow,
+    "push:\n    branches:\n      - pwragent",
+    "TrustedSigning downstream push trigger",
+)
+
+for fragment in (
+    '"docs/pwragent-distribution.md"',
+    '"scripts/check-release-signing.py"',
+    '"scripts/release/sign-windows-binary.ps1"',
+    '"scripts/release/upload-csc-link-from-1password.sh"',
+):
+    require_absent(
+        trusted_signing_check_workflow,
+        fragment,
+        "TrustedSigning preparation trigger scope",
+    )
+
+for name, contents in (
+    ("release signing contract check workflow", check_workflow),
+    ("TrustedSigning preparation check workflow", trusted_signing_check_workflow),
+):
+    if "environment:" in contents or "secrets." in contents:
+        fail(f"{name} must not enter an environment or read secrets")
 
 for fragment in (
     'repo="${GITHUB_REPOSITORY:-pwrdrvr/grok-build}"',
@@ -227,6 +448,10 @@ for fragment in (
     "`ci:release-signing`",
     "`refs/pull/<PR number>/merge`",
     "`signed-release-candidate`",
+    "Every ordinary push to `pwragent`",
+    "`unsigned-*` workflow artifacts",
+    "`Check PwrAgent TrustedSigning preparation`",
+    "documentation-only",
 ):
     require(runbook, fragment, "release signing runbook")
 
