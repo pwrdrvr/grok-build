@@ -343,6 +343,7 @@ for fragment in (
     "-File -Recurse -Force",
     "$filesToChecksum",
     'Join-Path $resolvedOutputRoot "SHA256SUMS"',
+    "$global:LASTEXITCODE = 0",
 ):
     require(windows_signing_preparer, fragment, "TrustedSigning preparer")
 
@@ -357,6 +358,19 @@ for fragment in (
         "Save-Module",
         "TrustedSigning PSGallery preparation",
     )
+
+require_before(
+    windows_signing_preparer,
+    "$checksumLines | Set-Content",
+    "$global:LASTEXITCODE = 0",
+    "TrustedSigning stale native exit-code reset",
+)
+require_before(
+    windows_signing_preparer,
+    "$global:LASTEXITCODE = 0",
+    'Write-Host "Prepared pinned TrustedSigning',
+    "TrustedSigning stale native exit-code reset",
+)
 
 if "Install-PackageProvider" in windows_signing_preparer:
     fail("TrustedSigning preparer must not bootstrap the legacy NuGet provider")
