@@ -47,6 +47,13 @@ def require_count(text: str, fragment: str, expected: int, scope: str) -> None:
         )
 
 
+def require_before(text: str, first: str, second: str, scope: str) -> None:
+    require(text, first, scope)
+    require(text, second, scope)
+    if text.index(first) >= text.index(second):
+        fail(f"{scope} must place {first!r} before {second!r}")
+
+
 def job(workflow: str, name: str) -> str:
     match = re.search(
         rf"(?ms)^  {re.escape(name)}:\n(.*?)(?=^  [a-z0-9][a-z0-9-]*:\n|\Z)",
@@ -308,6 +315,20 @@ for fragment in (
     require(windows_signing_verifier, fragment, "TrustedSigning verifier")
 
 for fragment in (
+    '$expectedPSGallerySource = "https://www.powershellgallery.com/api/v2"',
+    'Get-PSRepository -Name "PSGallery" -ErrorAction SilentlyContinue',
+    """if ($psGalleryRepositories.Count -eq 0) {
+  Register-PSRepository -Default -ErrorAction Stop
+  $psGalleryRepositories = @(
+    Get-PSRepository -Name "PSGallery" -ErrorAction Stop
+  )
+}""",
+    "Register-PSRepository -Default -ErrorAction Stop",
+    'Get-PSRepository -Name "PSGallery" -ErrorAction Stop',
+    "$psGalleryRepositories.Count -ne 1",
+    "[System.Uri]::TryCreate(",
+    "[System.StringComparison]::OrdinalIgnoreCase",
+    '$psGallery.PackageManagementProvider -ne "NuGet"',
     'trustedSigningVersion = "0.5.8"',
     "Save-Module",
     "-RequiredVersion $trustedSigningVersion",
@@ -324,6 +345,18 @@ for fragment in (
     'Join-Path $resolvedOutputRoot "SHA256SUMS"',
 ):
     require(windows_signing_preparer, fragment, "TrustedSigning preparer")
+
+for fragment in (
+    'Get-PSRepository -Name "PSGallery" -ErrorAction SilentlyContinue',
+    "Register-PSRepository -Default -ErrorAction Stop",
+    '$psGallery.PackageManagementProvider -ne "NuGet"',
+):
+    require_before(
+        windows_signing_preparer,
+        fragment,
+        "Save-Module",
+        "TrustedSigning PSGallery preparation",
+    )
 
 if "Install-PackageProvider" in windows_signing_preparer:
     fail("TrustedSigning preparer must not bootstrap the legacy NuGet provider")
@@ -366,6 +399,9 @@ for fragment in (
     "trusted-signing-preparation:",
     "runs-on: windows-2022",
     "timeout-minutes: 10",
+    "Remove PSGallery to exercise self-registration",
+    'Unregister-PSRepository -Name "PSGallery" -ErrorAction Stop',
+    "$remainingRepositories.Count -ne 0",
     "scripts/release/prepare-trusted-signing.ps1",
     "-OutputRoot $env:RUNNER_TEMP/signing-tools",
     "Verify signing client after archive round-trip",

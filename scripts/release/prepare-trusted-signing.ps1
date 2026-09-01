@@ -6,6 +6,41 @@ param(
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $trustedSigningVersion = "0.5.8"
+$expectedPSGallerySource = "https://www.powershellgallery.com/api/v2"
+
+$psGalleryRepositories = @(
+  Get-PSRepository -Name "PSGallery" -ErrorAction SilentlyContinue
+)
+if ($psGalleryRepositories.Count -eq 0) {
+  Register-PSRepository -Default -ErrorAction Stop
+  $psGalleryRepositories = @(
+    Get-PSRepository -Name "PSGallery" -ErrorAction Stop
+  )
+}
+if ($psGalleryRepositories.Count -ne 1) {
+  throw "Expected exactly one PSGallery repository, found $($psGalleryRepositories.Count)."
+}
+
+$psGallery = $psGalleryRepositories[0]
+$psGallerySourceUri = $null
+if (-not [System.Uri]::TryCreate(
+  [string]$psGallery.SourceLocation,
+  [System.UriKind]::Absolute,
+  [ref]$psGallerySourceUri
+)) {
+  throw "PSGallery has an invalid source URI: $($psGallery.SourceLocation)"
+}
+$actualPSGallerySource = $psGallerySourceUri.AbsoluteUri.TrimEnd([char]"/")
+if (-not [string]::Equals(
+  $actualPSGallerySource,
+  $expectedPSGallerySource,
+  [System.StringComparison]::OrdinalIgnoreCase
+)) {
+  throw "PSGallery has an unexpected source: $actualPSGallerySource"
+}
+if ([string]$psGallery.PackageManagementProvider -ne "NuGet") {
+  throw "PSGallery must use the NuGet package management provider."
+}
 
 $resolvedOutputRoot = [System.IO.Path]::GetFullPath($OutputRoot)
 $moduleRoot = Join-Path $resolvedOutputRoot "modules"
