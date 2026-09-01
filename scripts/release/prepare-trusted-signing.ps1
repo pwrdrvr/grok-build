@@ -151,4 +151,8 @@ $checksumLines = @(
 )
 $checksumLines | Set-Content -LiteralPath $checksumManifest -Encoding ascii
 
+# PowerShellGet can recover from a failed NuGet source probe while leaving the
+# native exit code nonzero. All required outputs are verified above, so clear
+# only that stale process-global code after the preparation is fully validated.
+$global:LASTEXITCODE = 0
 Write-Host "Prepared pinned TrustedSigning $trustedSigningVersion and its dependencies in $resolvedOutputRoot."
