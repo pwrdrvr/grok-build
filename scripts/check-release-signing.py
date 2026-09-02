@@ -291,6 +291,83 @@ for fragment in (
 ):
     require(macos_sign, fragment, "macos-sign")
 
+macos_codesign = step(macos_sign, "Sign and verify macOS binary")
+macos_notarize = step(macos_sign, "Notarize signed macOS binary")
+macos_package = step(macos_sign, "Package signed macOS distribution")
+macos_upload = step(macos_sign, "Upload signed macOS release asset")
+
+for fragment in (
+    "id: sign",
+    'for payload in stage stage-aarch64; do',
+    'binary_sha256="$(shasum -a 256 "$payload/grok"',
+    'echo "$payload-sha256=$binary_sha256" >> "$GITHUB_OUTPUT"',
+):
+    require(macos_codesign, fragment, "macOS codesign digest")
+
+for fragment in (
+    "APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}",
+    "APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}",
+    "APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}",
+    "EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}",
+    "EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}",
+    'cp -R stage stage-aarch64 "$submission_contents/input/"',
+    'ditto -c -k "$submission_contents/input"',
+    'for payload in stage stage-aarch64; do',
+    'cmp "$payload/grok" "$submission_contents/expanded/$payload/grok"',
+    'xcrun notarytool submit "$submission_archive"',
+    '--key "$api_key"',
+    '--key-id "$APPLE_API_KEY_ID"',
+    '--issuer "$APPLE_API_ISSUER_ID"',
+    "--wait",
+    "--timeout 30m",
+    "--output-format json",
+    '[[ "$submission_status" != "Accepted" ]]',
+    'test "$actual_sha256" = "$EXPECTED_BINARY_SHA256"',
+    'test "$actual_arm64_sha256" = "$EXPECTED_ARM64_SHA256"',
+):
+    require(macos_notarize, fragment, "macOS notarization")
+
+for fragment in (
+    "EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}",
+    "EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}",
+    'for payload in stage stage-aarch64; do',
+    'published_archive="$arm64_asset"',
+    'expected_sha256="$EXPECTED_ARM64_SHA256"',
+    'published_archive="$asset"',
+    'expected_sha256="$EXPECTED_BINARY_SHA256"',
+    'cmp "$payload/grok" "$published_contents/grok"',
+    'test "$published_sha256" = "$expected_sha256"',
+    "codesign --verify --all-architectures --strict",
+    '-R="notarized" --check-notarization',
+    "spctl --assess --type execute --verbose=4",
+    "-verify_arch arm64 x86_64",
+    'test "$(lipo -archs "$published_contents/grok")" = arm64',
+):
+    require(macos_package, fragment, "published macOS payload verification")
+
+require_before(
+    macos_sign,
+    "- name: Sign and verify macOS binary",
+    "- name: Notarize signed macOS binary",
+    "macOS signing and notarization order",
+)
+require_before(
+    macos_sign,
+    "- name: Notarize signed macOS binary",
+    "- name: Package signed macOS distribution",
+    "macOS notarization and packaging order",
+)
+require_before(
+    macos_sign,
+    "- name: Package signed macOS distribution",
+    "- name: Upload signed macOS release asset",
+    "macOS package verification and upload order",
+)
+require(macos_upload, "name: release-macos-universal", "macOS release upload")
+require_count(workflow, "xcrun notarytool submit", 1, "release workflow")
+require_absent(macos_sign, "stapler", "standalone macOS binary workflow")
+require_absent(macos_prepare, "notarytool", "ordinary macOS preparation job")
+
 for fragment in (
     "startsWith(github.ref, 'refs/tags/pwragent-v')",
     "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
@@ -500,6 +577,7 @@ for name, contents in (
 ):
     if "environment:" in contents or "secrets." in contents:
         fail(f"{name} must not enter an environment or read secrets")
+    require_absent(contents, "notarytool", f"{name} ordinary CI scope")
 
 for fragment in (
     'repo="${GITHUB_REPOSITORY:-pwrdrvr/grok-build}"',
@@ -536,6 +614,16 @@ for fragment in (
     "`unsigned-*` workflow artifacts",
     "`Check PwrAgent TrustedSigning preparation`",
     "documentation-only",
+    "`APPLE_API_KEY_P8`",
+    "`APPLE_API_KEY_ID`",
+    "`APPLE_API_ISSUER_ID`",
+    "App Store Connect team API key",
+    "temporary ZIP",
+    "notarytool",
+    "Accepted",
+    "cannot be stapled",
+    "--check-notarization",
+    "spctl --assess --type execute",
 ):
     require(runbook, fragment, "release signing runbook")
 
