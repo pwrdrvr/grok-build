@@ -40,11 +40,11 @@ macOS artifacts feed the universal merge within the same run. Branch builds do
 not prepare release signing-input archives, enter a protected signing
 environment, assemble a signed release candidate, or publish a GitHub Release.
 
-Release-tag builds sign the universal macOS executable with PwrDrvr LLC's
-Developer ID Application identity and Authenticode-sign the Windows x64
-executable with PwrDrvr LLC's Azure Artifact Signing certificate before either
-archive is eligible for publication. Linux archives remain checksum-verified
-but are not platform-signed.
+Release-tag builds sign and notarize the universal macOS executable with
+PwrDrvr LLC's Developer ID Application identity and Apple team, and
+Authenticode-sign the Windows x64 executable with PwrDrvr LLC's Azure Artifact
+Signing certificate before either archive is eligible for publication. Linux
+archives remain checksum-verified but are not platform-signed.
 
 Windows arm64 is intentionally omitted until PwrAgent ships a Windows arm64
 desktop build. Linux arm64 remains included because PwrAgent already packages
@@ -94,7 +94,14 @@ signing:
    does not check out source. It downloads and verifies the exact prepared
    archive, imports the Developer ID certificate into an ephemeral keychain,
    applies a hardened-runtime timestamped signature, and requires both
-   `codesign --verify` and Team ID `T44CNHC4UH` before packaging.
+   `codesign --verify` and Team ID `T44CNHC4UH`. It records the signed Mach-O's
+   SHA-256, copies those exact bytes into a temporary ZIP accepted by Apple's
+   `notarytool`, waits for the service, and fails unless the returned status is
+   exactly `Accepted`. The ZIP is only a submission transport; the established
+   `tar.gz` release format is unchanged. Before upload, the job extracts the
+   release archive and proves its `grok` bytes match the submitted signed
+   binary, then checks its signature, online notarization ticket, Gatekeeper
+   assessment, and universal architectures.
 3. The `windows-prepare` job builds `grok.exe`. For a release tag or
    label-gated signing rehearsal, it downloads the exact `TrustedSigning` 0.5.8
    module plus its pinned signing-client dependencies, validates the Microsoft
@@ -121,11 +128,11 @@ signing:
    platform outputs independently.
 
 This dependency chain is fail closed: a missing environment approval, missing
-secret or variable, bad certificate, digest mismatch, signing-service failure,
-wrong signer, or missing timestamp prevents release creation. Signing material
-is never available to build jobs or manual-dispatch builds. Pull requests gain
-access only through the deliberately label-gated, environment-approved signing
-test described below.
+secret or variable, bad certificate, digest mismatch, signing-service or Apple
+notary failure, a notary status other than `Accepted`, wrong signer, or missing
+timestamp prevents release creation. Signing material is never available to
+build jobs or manual-dispatch builds. Pull requests gain access only through the
+deliberately label-gated, environment-approved signing test described below.
 
 `scripts/check-release-signing.py` pins these workflow invariants. The cheap
 `Check PwrAgent release signing` workflow runs it for relevant pull requests and
@@ -141,12 +148,22 @@ preparation and archive-boundary failures before an expensive end-to-end
 release rehearsal without downloading the client for documentation-only
 changes.
 
-The raw Grok executable is Developer ID signed but is not submitted separately
-for Apple notarization. It is normally embedded during PwrAgent's no-secret
-packaging stage and then covered by PwrAgent's signed and notarized application
-bundle. If this repository later distributes Grok as a standalone macOS app,
-package, or disk image, add notarization for that container before calling it a
-Gatekeeper-ready standalone download.
+Codesigning, notarization, Gatekeeper assessment, and stapling are distinct.
+`codesign` proves the executable's Developer ID signature and hardened-runtime
+properties. An `Accepted` `notarytool` response proves Apple's notary service
+accepted the submitted code. `codesign -R="notarized" --check-notarization`
+looks up the ticket for the exact Mach-O, while `spctl --assess --type execute`
+asks the local system policy engine how Gatekeeper evaluates it. The published
+archive is `tar.gz`. ZIP archives and raw standalone executables cannot be stapled;
+the job therefore does not invoke `stapler` or claim an embedded ticket.
+Gatekeeper needs network access to look up the notarization ticket when
+it has not previously cached it. PwrAgent's containing application must still
+complete its own outer-bundle signing and notarization after embedding Grok.
+
+This design follows Apple's
+[custom notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow),
+its [`notarytool` migration guidance](https://developer.apple.com/documentation/technotes/tn3147-migrating-to-the-latest-notarization-tool),
+and Apple's [distribution packaging guidance](https://developer.apple.com/forums/thread/701581).
 
 ## Testing protected signing from a pull request
 
@@ -209,9 +226,19 @@ Environment secrets:
 | --- | --- |
 | `CSC_LINK` | Base64 of the password-protected Developer ID `.p12`. A `data:application/x-pkcs12;base64,` prefix is accepted but not required. |
 | `CSC_KEY_PASSWORD` | Password used when exporting that `.p12`. |
+| `APPLE_API_KEY_P8` | Complete raw contents of an App Store Connect team API private-key `.p8` file, including its `BEGIN`/`END PRIVATE KEY` lines. |
+| `APPLE_API_KEY_ID` | Key ID shown for that team API key in App Store Connect. |
+| `APPLE_API_ISSUER_ID` | Issuer ID shown on the App Store Connect Integrations page for the team API. |
 
-No App Store Connect API key is required for this binary-only signing job; the
-workflow does not notarize this raw executable.
+The notary credentials must be an App Store Connect team API key associated with
+PwrDrvr's Apple Developer team; Apple does not allow individual API keys to
+authenticate `notarytool`. Have the Account Holder enable App Store Connect API
+access if necessary, create the team key with the least privilege that can submit
+Developer ID software for notarization, download its `.p8` exactly once, and
+place all three values only in the protected `apple-signing` environment.
+Do not store them as repository secrets or commit the `.p8`. The workflow writes
+the key to a mode-restricted temporary file, never prints it, and removes it at
+the end of the notarization step.
 
 To prepare `CSC_LINK` locally without writing the base64 to the repository:
 
@@ -289,7 +316,14 @@ the final payloads independently:
 tar -xzf pwragent-grok-<version>-macos-universal.tar.gz
 codesign --verify --all-architectures --strict --verbose=2 grok
 codesign --display --verbose=4 grok 2>&1 | grep 'TeamIdentifier=T44CNHC4UH'
+codesign -vvvv -R="notarized" --check-notarization grok
+spctl --assess --type execute --verbose=4 grok
 ```
+
+`codesign --verify` and `codesign --display` validate codesigning and signer
+identity. `codesign --check-notarization` performs Apple's online ticket lookup,
+and `spctl` is the local Gatekeeper policy assessment; neither is a stapling
+check. Run the online checks on a network-connected Mac.
 
 ```powershell
 Expand-Archive pwragent-grok-<version>-windows-x86_64.zip -DestinationPath grok-release
