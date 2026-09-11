@@ -52,24 +52,17 @@ an arm64 Debian artifact.
 
 ## Cutting a downstream release
 
-Use a SemVer prerelease suffix so downstream builds never look like official
-xAI releases:
+Follow the in-repo [grok-release skill](../.agents/skills/grok-release/SKILL.md)
+for version selection, signed tag publication, monitoring, and final verification.
+Use version `<upstream>-pwragent.<N>` and signed annotated tag
+`pwragent-v<upstream>-pwragent.<N>` so downstream builds never look like official
+xAI releases. Determine `<upstream>` from the selected source commit's
+`crates/codegen/xai-grok-pager-bin/Cargo.toml`, not the latest announced release,
+and choose an unused suffix after checking downstream tags and releases.
 
-```sh
-git switch pwragent
-git fetch origin main
-# Preserve the old downstream tip, then replay the downstream patch stack on
-# origin/main after auditing for patches that upstream has superseded.
-git branch backup/pwragent-pre-rebase
-git rebase --onto origin/main "$(git merge-base origin/main pwragent)" pwragent
-
-upstream_version=1.0.12
-revision=1
-tag="pwragent-v${upstream_version}-pwragent.${revision}"
-git tag -s "$tag" -m "PwrAgent Grok ${upstream_version}-pwragent.${revision}"
-git push pwrdrvr pwragent
-git push pwrdrvr "$tag"
-```
+Upstream synchronization is a separate operation: audit superseded patches,
+preserve the old downstream tip, replay, and validate before releasing when a
+rebase is requested. Cutting a release does not automatically rebase `pwragent`.
 
 Tag pushes build all targets, pause at the protected signing environments, and
 create the GitHub Release only after both protected jobs have verified their
