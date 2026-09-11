@@ -185,6 +185,7 @@ fn prepared_post_tool_use_call(id: &str, tool_name: &str) -> PreparedToolCall {
         raw_arguments: "{}".to_string(),
         mcp_file: None,
         parsed_args: serde_json::json!({}),
+        tool_call_display: None,
         model_id: "test-model".to_string(),
         concatenated_json_count: 0,
         dispatch_target_name: None,
@@ -273,6 +274,7 @@ async fn post_tool_use_replacement_reaches_model_original_stays_on_record() {
                     concatenated_json_count: 0,
                     model_id: "test-model",
                     tool_parsed_args: &serde_json::json!({}),
+                    tool_call_display: None,
                     model_output_override,
                 })
                 .await
