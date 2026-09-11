@@ -75,7 +75,7 @@ was in place:
 ## Releases
 
 Downstream builds are published as prereleases tagged
-`pwragent-v<upstream-version>-pwragent.<n>` — macOS universal, Linux x86_64,
+`pwragent-v<upstream-version>-pwragent.<n>` — macOS universal and Apple Silicon, Linux x86_64,
 Linux aarch64, and Windows x64 archives plus `SHA256SUMS`. See
 [`docs/pwragent-distribution.md`](docs/pwragent-distribution.md) for the
 release process, signing boundaries, and target rationale.

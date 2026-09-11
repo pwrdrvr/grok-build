@@ -206,7 +206,7 @@ jobs:
           retention-days: 7
 
   macos-universal:
-    name: Prepare macOS universal distribution
+    name: Prepare macOS universal and Apple Silicon distributions
     needs:
       - metadata
       - build
@@ -230,6 +230,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(lipo -archs raw/raw-macos-aarch64/grok)" = arm64
+          test "$(lipo -archs raw/raw-macos-x86_64/grok)" = x86_64
+          for file in LICENSE THIRD-PARTY-NOTICES SOURCE_REV; do
+            cmp "raw/raw-macos-aarch64/$file" "raw/raw-macos-x86_64/$file"
+          done
+          cp -R raw/raw-macos-aarch64 stage-aarch64
+          chmod 0755 stage-aarch64/grok
           mkdir -p stage
           lipo -create \
             raw/raw-macos-aarch64/grok \
@@ -260,8 +267,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COPYFILE_DISABLE=1
           tarball="$RUNNER_TEMP/macos-release-signing-input.tgz"
-          tar -czf "$tarball" stage
+          tar -czf "$tarball" stage stage-aarch64
           sha256="$(shasum -a 256 "$tarball" | awk '{print $1}')"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
           printf "%s  macos-release-signing-input.tgz\n" "$sha256" \
@@ -305,7 +313,7 @@ jobs:
           retention-days: 7
 
   macos-sign:
-    name: Sign macOS universal binary
+    name: Sign macOS universal and Apple Silicon binaries
     if: >-
       (github.event_name == 'push'
       && startsWith(github.ref, 'refs/tags/pwragent-v'))
@@ -382,18 +390,25 @@ jobs:
             "$keychain"
           security find-identity -v -p codesigning "$keychain" | grep -F "\"${identity}\""
 
-          codesign \
-            --force \
-            --keychain "$keychain" \
-            --options runtime \
-            --timestamp \
-            --sign "$identity" \
-            stage/grok
-          codesign --verify --all-architectures --strict --verbose=2 stage/grok
-          codesign --display --verbose=4 stage/grok 2> "$RUNNER_TEMP/grok-codesign.txt"
-          grep -Fx "Authority=${identity}" "$RUNNER_TEMP/grok-codesign.txt"
-          grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}" "$RUNNER_TEMP/grok-codesign.txt"
-          lipo stage/grok -verify_arch arm64 x86_64
+          for payload in stage stage-aarch64; do
+            codesign \
+              --force \
+              --keychain "$keychain" \
+              --options runtime \
+              --timestamp \
+              --sign "$identity" \
+              "$payload/grok"
+            codesign --verify --all-architectures --strict --verbose=2 "$payload/grok"
+            codesign --display --verbose=4 "$payload/grok" 2> "$RUNNER_TEMP/grok-codesign.txt"
+            grep -Fx "Authority=${identity}" "$RUNNER_TEMP/grok-codesign.txt"
+            grep -Fx "TeamIdentifier=${APPLE_TEAM_ID}" "$RUNNER_TEMP/grok-codesign.txt"
+            if [[ "$payload" == stage-aarch64 ]]; then
+              test "$(lipo -archs "$payload/grok")" = arm64
+            else
+              lipo "$payload/grok" -verify_arch arm64 x86_64
+              test "$(lipo -archs "$payload/grok" | wc -w | tr -d ' ')" = 2
+            fi
+          done
 
       - name: Package signed macOS distribution
         env:
@@ -401,15 +416,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COPYFILE_DISABLE=1
           asset="pwragent-grok-${GROK_VERSION}-macos-universal.tar.gz"
           tar -C stage -czf "$asset" .
           echo "ASSET=$asset" >> "$GITHUB_ENV"
+          arm64_asset="pwragent-grok-${GROK_VERSION}-macos-aarch64.tar.gz"
+          tar -C stage-aarch64 -czf "$arm64_asset" .
+          echo "ARM64_ASSET=$arm64_asset" >> "$GITHUB_ENV"
 
       - name: Upload signed macOS release asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-macos-universal
           path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload signed Apple Silicon release asset
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-macos-aarch64
+          path: ${{ env.ARM64_ASSET }}
           if-no-files-found: error
           retention-days: 7
 
@@ -644,12 +671,19 @@ jobs:
           merge-multiple: true
 
       - name: Generate checksums
+        env:
+          GROK_VERSION: ${{ needs.metadata.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           cd dist
           mapfile -t assets < <(find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort)
-          test "${#assets[@]}" -eq 4
+          test "${#assets[@]}" -eq 5
+          for platform in macos-universal macos-aarch64 linux-aarch64 linux-x86_64 windows-x86_64; do
+            extension=tar.gz
+            if [[ "$platform" == windows-x86_64 ]]; then extension=zip; fi
+            test -f "pwragent-grok-${GROK_VERSION}-${platform}.${extension}"
+          done
           sha256sum "${assets[@]}" > SHA256SUMS
 
       - name: Upload signed release candidate

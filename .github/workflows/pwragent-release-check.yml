@@ -37,3 +37,21 @@ jobs:
 
       - name: Validate fail-closed signing workflow
         run: python3 scripts/check-release-signing.py
+
+      - name: Test macOS archive and release assembly
+        run: python3 scripts/release/test-macos-packaging.py
+
+  macos-packaging:
+    name: macOS architecture and packaging tests
+    runs-on: macos-15
+    permissions:
+      contents: read
+      id-token: none
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6
+        with:
+          persist-credentials: false
+
+      - name: Test native macOS payloads
+        run: python3 scripts/release/test-macos-packaging.py
