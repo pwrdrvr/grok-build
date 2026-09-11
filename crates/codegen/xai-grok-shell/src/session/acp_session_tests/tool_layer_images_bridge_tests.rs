@@ -191,6 +191,7 @@ fn prepared_post_tool_use_call(id: &str, tool_name: &str) -> PreparedToolCall {
         invocation_id: "018f6b6c-7b3a-7c3a-8c3a-000000000001".to_string(),
         tool_id: "opaque".to_string(),
         tool_version: None,
+        tool_call_display: None,
         concatenated_json_count: 0,
         coercion_note: None,
         dispatch_target_name: None,
@@ -280,6 +281,7 @@ async fn post_tool_use_replacement_reaches_model_original_stays_on_record() {
                     coercion_note: None,
                     model_id: "test-model",
                     tool_parsed_args: &serde_json::json!({}),
+                    tool_call_display: None,
                     model_output_override,
                 })
                 .await

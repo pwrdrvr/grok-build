@@ -104,7 +104,11 @@ pub(crate) fn spawn_request_service(
             if input.validate_only {
                 let script = resolved.script.clone();
                 let probe_args = input.args.clone();
-                let agent_budget = match manager.lock().await.effective_agent_budget(input.agent_budget) {
+                let agent_budget = match manager
+                    .lock()
+                    .await
+                    .effective_agent_budget(input.agent_budget)
+                {
                     Ok(budget) => budget,
                     Err(error) => {
                         let _ = ack.send(WorkflowLaunchAck::Rejected {
