@@ -23,6 +23,7 @@ The `Build PwrAgent Grok distribution` workflow produces:
 | PwrAgent target | Grok artifact |
 | --- | --- |
 | macOS universal (Intel + Apple Silicon) | `pwragent-grok-<version>-macos-universal.tar.gz` |
+| macOS Apple Silicon (arm64 only) | `pwragent-grok-<version>-macos-aarch64.tar.gz` |
 | Ubuntu x64 | `pwragent-grok-<version>-linux-x86_64.tar.gz` |
 | Ubuntu arm64 | `pwragent-grok-<version>-linux-aarch64.tar.gz` |
 | Windows x64 | `pwragent-grok-<version>-windows-x86_64.zip` |
@@ -40,9 +41,9 @@ macOS artifacts feed the universal merge within the same run. Branch builds do
 not prepare release signing-input archives, enter a protected signing
 environment, assemble a signed release candidate, or publish a GitHub Release.
 
-Release-tag builds sign the universal macOS executable with PwrDrvr LLC's
+Release-tag builds separately sign the universal and arm64-only macOS executables with PwrDrvr LLC's
 Developer ID Application identity and Authenticode-sign the Windows x64
-executable with PwrDrvr LLC's Azure Artifact Signing certificate before either
+executable with PwrDrvr LLC's Azure Artifact Signing certificate before any signed
 archive is eligible for publication. Linux archives remain checksum-verified
 but are not platform-signed.
 
@@ -80,13 +81,15 @@ signing:
 
 1. macOS arm64 and x86_64 jobs build without secrets. For a release tag or
    label-gated signing rehearsal, a no-secret job merges them into one universal
-   binary, archives the signing input, and exports its SHA-256 digest. Branch
+   binary and stages the original arm64-only distribution alongside it, archives
+   both payloads in one signing input, and exports its SHA-256 digest. Branch
    and manual builds package the merged binary directly as an unsigned
    development artifact instead.
 2. The `macos-sign` job is gated by the `apple-signing` GitHub Environment. It
    does not check out source. It downloads and verifies the exact prepared
    archive, imports the Developer ID certificate into an ephemeral keychain,
-   applies a hardened-runtime timestamped signature, and requires both
+   applies a separate hardened-runtime timestamped signature to each binary, checks
+   exact architectures (arm64 only or arm64 + x86_64), and requires both
    `codesign --verify` and Team ID `T44CNHC4UH` before packaging.
 3. The `windows-prepare` job builds `grok.exe`. For a release tag or
    label-gated signing rehearsal, it downloads the exact `TrustedSigning` 0.5.8
@@ -106,7 +109,7 @@ signing:
    requests; acquisition of build and signing tools happened before the
    protected boundary.
 5. The `release-candidate` job depends on both protected signing jobs and the
-   Linux builds, downloads only `release-*` artifacts, requires exactly four
+   Linux builds, downloads only `release-*` artifacts, requires exactly five
    platform archives, calculates `SHA256SUMS` from the final signed packages,
    and uploads one `signed-release-candidate` workflow artifact.
 6. The tag-only release job downloads that exact assembled candidate and
@@ -147,7 +150,7 @@ The `ci:release-signing` label runs the same preparation, protected signing,
 signature verification, and release-candidate assembly used by a tag. It does
 not run the `release` job and therefore cannot create or modify a GitHub
 Release. The result is a seven-day `signed-release-candidate` workflow artifact
-containing all four platform archives and their final `SHA256SUMS`.
+containing all five platform archives and their final `SHA256SUMS`.
 
 This is intentionally not available to every pull request. Before applying the
 label:
@@ -307,7 +310,22 @@ The packaged launch descriptor should:
 - allow an explicit user-selected local Grok executable to override the
   embedded copy.
 
-macOS signing/notarization must happen after the universal Grok executable is
+For an Apple Silicon app, select `pwragent-grok-<version>-macos-aarch64.tar.gz`
+only when that exact asset exists on the pinned release. Older releases remain
+unchanged: when the arm64 asset is absent, embed the same release's
+`macos-universal` Grok even inside an arm64 app. A present arm64 asset with a
+missing or invalid checksum is an error, not a reason to fall back. Universal
+apps always use the universal Grok asset. Both archives have the same root
+layout (`grok`, `LICENSE`, `THIRD-PARTY-NOTICES`, `SOURCE_REV`, and
+`PWRAGENT-BUILD.txt`); their provenance platform is respectively
+`macos-aarch64` or `macos-universal`.
+
+The new asset becomes publicly available only after a future release tag using
+this workflow completes protected signing and publication. PR signing rehearsals
+provide it only in seven-day workflow artifacts; branch/manual builds do not
+publish it. Existing releases and tags are not backfilled.
+
+macOS signing/notarization must happen after the selected Grok executable is
 embedded. Linux and Windows packaging must embed the matching native artifact.
 
 ## License and naming

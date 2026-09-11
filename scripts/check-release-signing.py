@@ -242,6 +242,40 @@ for fragment in (
 ):
     require(windows_prepare, fragment, "windows-prepare")
 
+# Both macOS payloads must cross the same verified, no-secret archive boundary.
+for fragment in (
+    'test "$(lipo -archs raw/raw-macos-aarch64/grok)" = arm64',
+    'test "$(lipo -archs raw/raw-macos-x86_64/grok)" = x86_64',
+    'for file in LICENSE THIRD-PARTY-NOTICES SOURCE_REV; do',
+    'cmp "raw/raw-macos-aarch64/$file" "raw/raw-macos-x86_64/$file"',
+    'cp -R raw/raw-macos-aarch64 stage-aarch64',
+    'tar -czf "$tarball" stage stage-aarch64',
+):
+    require(macos_prepare, fragment, "macOS preparation")
+require_before(macos_sign, "Verify macOS signing input", "Expand macOS signing input", "macOS digest boundary")
+require_before(macos_sign, "Expand macOS signing input", "Sign and verify macOS binary", "macOS signing boundary")
+for fragment in (
+    'EXPECTED_SHA256: ${{ needs.macos-universal.outputs.signing-input-sha256 }}',
+    'test "$actual" = "$EXPECTED_SHA256"',
+    'shasum -a 256 --check macos-release-signing-input.tgz.sha256',
+    'for payload in stage stage-aarch64; do',
+    'test "$(lipo -archs "$payload/grok")" = arm64',
+    'lipo "$payload/grok" -verify_arch arm64 x86_64',
+    "test \"$(lipo -archs \"$payload/grok\" | wc -w | tr -d ' ')\" = 2",
+    'codesign --verify --all-architectures --strict --verbose=2 "$payload/grok"',
+    'Authority=${identity}',
+    'tar -C stage -czf "$asset" .',
+    'tar -C stage-aarch64 -czf "$arm64_asset" .',
+    'pwragent-grok-${GROK_VERSION}-macos-universal.tar.gz',
+    'pwragent-grok-${GROK_VERSION}-macos-aarch64.tar.gz',
+    'name: release-macos-universal',
+    'name: release-macos-aarch64',
+):
+    require(macos_sign, fragment, "both signed macOS distributions")
+require_absent(macos_sign, "actions/checkout", "protected macOS job")
+require(release_candidate, "for platform in macos-universal macos-aarch64 linux-aarch64 linux-x86_64 windows-x86_64; do", "complete release asset set")
+require(release_candidate, 'test -f "pwragent-grok-${GROK_VERSION}-${platform}.${extension}"', "complete release asset set")
+
 for fragment in (
     "startsWith(github.ref, 'refs/tags/pwragent-v')",
     "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
@@ -283,7 +317,7 @@ require(
     "contains(github.event.pull_request.labels.*.name, 'ci:release-signing')",
     "release-candidate",
 )
-require(release_candidate, "test \"${#assets[@]}\" -eq 4", "release-candidate")
+require(release_candidate, "test \"${#assets[@]}\" -eq 5", "release-candidate")
 require(release_candidate, "name: signed-release-candidate", "release-candidate")
 require(release_candidate, "contents: read", "release-candidate")
 require(release, "- release-candidate", "release")
