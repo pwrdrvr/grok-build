@@ -1,5 +1,33 @@
 # ACP compatibility review for PwrAgent
 
+## Downstream replay audit — 2026-09-21
+
+Source audit against upstream `4247f661689354b831191f11eeeac8424993fe3d`
+(Cargo version `1.0.38`), replaying the downstream stack from `3825ae5b`:
+
+- Retain the image capability patch: upstream accepts image content, but its
+  initialize response still constructs `PromptCapabilities` with only
+  `embedded_context(true)`, leaving image input unadvertised to ACP clients.
+- Retain completed-tool display metadata: upstream terminal updates still use
+  placeholder backend titles and omit the recovered input/kind fields.
+- Retain `x.ai/session/steer` and actor delivery acknowledgement, plus the
+  session workflow-budget extension and launch/resume maximum enforcement.
+  Upstream's interjection content splitting moved to `extensions::content`;
+  use that shared helper rather than restoring the old duplicate implementation.
+- Preserve upstream authored MCP argument handling and workflow task-model
+  selection while adding our display metadata and budget policy fields.
+- Retain Windows protoc portability and the MSVC symbol-mangling workaround;
+  upstream has not replaced these changes. Keep downstream signing/CI and both
+  Universal and Apple Silicon-only macOS release packages.
+- Model availability comes from the fetched model catalog (`x.ai/models/list`
+  waits for that catalog), not a hardcoded Grok-4.7 entry. This source audit does
+  not verify account-specific Grok-4.7 availability or live inference.
+
+This is a source/replay audit, not a fresh protocol-wide certification. The
+broader interoperability comparison below retains its original review date.
+
+## Protocol review scope
+
 Reviewed against the stable ACP v1 documentation and the PwrAgent source on
 2026-08-14. ACP v2 is still documented as draft and is not a release target
 for this fork yet.
