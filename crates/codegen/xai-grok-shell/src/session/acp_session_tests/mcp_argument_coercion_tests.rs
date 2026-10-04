@@ -160,6 +160,7 @@ async fn push_mcp(
             coercion_note: note,
             model_id: "test-model",
             tool_parsed_args: parsed_args,
+            tool_call_display: None,
             model_output_override: None,
         })
         .await
