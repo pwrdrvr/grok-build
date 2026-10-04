@@ -101,7 +101,7 @@ jobs:
             executable: xai-grok-pager
             release_asset: pwragent-grok-${{ needs.metadata.outputs.version }}-linux-x86_64.tar.gz
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 360
     permissions:
       contents: read
       id-token: none
@@ -444,7 +444,7 @@ jobs:
     name: Prepare Windows distribution
     needs: metadata
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 360
     permissions:
       contents: read
       id-token: none
