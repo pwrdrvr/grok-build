@@ -51,6 +51,12 @@ Windows arm64 is intentionally omitted until PwrAgent ships a Windows arm64
 desktop build. Linux arm64 remains included because PwrAgent already packages
 an arm64 Debian artifact.
 
+The lockfile keeps `find-msvc-tools` at `0.1.5`, the version declared by
+`cc 1.2.48`. Pairing that `cc` with `find-msvc-tools 0.1.13` fails to compile
+on Windows: `FILE_ATTRIBUTE_TEMPORARY` becomes `i32`, but `custom_flags` needs
+`u32`. Revisit this pin when updating `cc`, and validate the pair against the
+Windows target rather than relying on a macOS-only build.
+
 ## Cutting a downstream release
 
 Follow the in-repo [grok-release skill](../.agents/skills/grok-release/SKILL.md)
