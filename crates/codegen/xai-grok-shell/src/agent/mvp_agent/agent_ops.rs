@@ -3368,12 +3368,29 @@ impl MvpAgent {
         state: &acp::SessionModelState,
     ) -> Vec<acp::SessionConfigOption> {
         let inputs = self.session_config_inputs(session_id, state);
-        session_config::build_acp_config_options(
+        let mut options = session_config::build_acp_config_options(
             &state.available_models,
             &inputs.model_id,
             &inputs.effort_options,
             inputs.current_effort,
-        )
+        );
+        if let Some(handle) = session_id.and_then(|id| self.resident_handle(id)) {
+            if matches!(handle.permission_handle, xai_grok_workspace::permission::PermissionHandle::AllowAll) {
+                return options;
+            }
+            let current = if handle.permission_handle.is_yolo_mode() {
+                "yolo"
+            } else if handle.permission_handle.is_auto_mode() {
+                "auto"
+            } else {
+                "default"
+            };
+            options.push(session_config::permission_mode_config_option(
+                current,
+                crate::util::config::auto_permission_mode_enabled_from_disk(),
+            ));
+        }
+        options
     }
     /// Resolve an effort selector against `model_id`'s menu (not a fresh session lookup, which
     /// falls back to the global model when the session isn't resident). `session_id` still gates

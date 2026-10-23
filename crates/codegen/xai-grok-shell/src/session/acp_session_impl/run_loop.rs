@@ -1286,6 +1286,11 @@ pub(super) async fn run_session(
                                 session.permissions.set_llm_side_query_wired(false);
                             }
                         }
+                        SessionCommand::SetPermissionMode { mode, respond_to } => {
+                            let auto_enabled = crate::util::config::auto_permission_mode_enabled_from_disk();
+                            let result = session.apply_acp_permission_mode(&mode, auto_enabled).await;
+                            let _ = respond_to.send(result);
+                        }
                         SessionCommand::ResetPermissionState => {
                             session.permissions.reset_state();
                             tracing::info!(

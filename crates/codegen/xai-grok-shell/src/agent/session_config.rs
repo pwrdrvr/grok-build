@@ -14,6 +14,20 @@ pub(crate) const SELECTABLE_REASONING_EFFORTS: [ReasoningEffort; 5] = [
 
 pub(crate) const CONFIG_ID_MODEL: &str = "model";
 pub(crate) const CONFIG_ID_REASONING_EFFORT: &str = "reasoning_effort";
+pub(crate) const CONFIG_ID_PERMISSION_MODE: &str = "permission_mode";
+
+pub(crate) fn permission_mode_config_option(
+    current: &str,
+    auto_enabled: bool,
+) -> acp::SessionConfigOption {
+    let mut values = vec![acp::SessionConfigSelectOption::new("default", "Default Access")];
+    if auto_enabled {
+        values.push(acp::SessionConfigSelectOption::new("auto", "Auto"));
+    }
+    values.push(acp::SessionConfigSelectOption::new("yolo", "Full Access"));
+    acp::SessionConfigOption::select(CONFIG_ID_PERMISSION_MODE, "Permissions", current.to_string(), values)
+        .category(acp::SessionConfigOptionCategory::Mode)
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +196,24 @@ pub(crate) fn build_acp_config_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn acp_permission_selector_advertises_auto_only_when_enabled() {
+        for auto_enabled in [false, true] {
+            let option = serde_json::to_value(permission_mode_config_option("default", auto_enabled))
+                .expect("serialize permission selector");
+            assert_eq!(option["id"], "permission_mode");
+            assert_eq!(option["category"], "mode");
+            assert_eq!(option["currentValue"], "default");
+            let values: Vec<_> = option["options"].as_array().expect("flat choices")
+                .iter().map(|value| value["value"].as_str().unwrap()).collect();
+            assert_eq!(values, if auto_enabled {
+                vec!["default", "auto", "yolo"]
+            } else {
+                vec!["default", "yolo"]
+            });
+        }
+    }
 
     fn model(id: &'static str, name: &str) -> acp::ModelInfo {
         acp::ModelInfo::new(acp::ModelId::new(id), name.to_string())

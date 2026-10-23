@@ -564,6 +564,11 @@ pub enum SessionCommand {
     SetAutoMode {
         enabled: bool,
     },
+    /// Apply one session's ACP permission selector and acknowledge the actual state.
+    SetPermissionMode {
+        mode: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
     ResetPermissionState,
     Rewind {
         request: RewindRequest,
