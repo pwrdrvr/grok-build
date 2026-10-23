@@ -27,6 +27,40 @@ pub(super) fn filter_cursor_tools_by_plan_mode(
     defs
 }
 impl SessionActor {
+    /// The ACP selector is session-scoped, unlike the client-wide legacy notification.
+    pub(crate) async fn apply_acp_permission_mode(
+        self: &Arc<Self>,
+        mode: &str,
+        auto_enabled: bool,
+    ) -> Result<(), String> {
+        if matches!(self.permissions, PermissionHandle::AllowAll) {
+            return Err("This session has no permission manager".into());
+        }
+        match mode {
+            "auto" => {
+                if !auto_enabled {
+                    return Err("Auto permission mode is disabled by configuration".into());
+                }
+                self.permissions.set_auto_mode(true);
+                self.wire_permission_auto_llm_classifier().await;
+            }
+            "yolo" => {
+                self.permissions.set_yolo_mode(true);
+                if !self.permissions.is_yolo_mode() {
+                    return Err("Always-approve is disabled by policy".into());
+                }
+                self.permissions.set_llm_side_query_wired(false);
+            }
+            "default" => {
+                self.permissions.set_yolo_mode(false);
+                self.permissions.set_auto_mode(false);
+                self.permissions.set_llm_side_query_wired(false);
+            }
+            _ => return Err(format!("Unknown permission mode: {mode}")),
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_prompt_modes_to_snapshot(&self, snapshot: &mut TurnDeltaSnapshot) {
         snapshot.start_prompt_mode = Some(self.turn_start_prompt_mode.lock().to_string());
         snapshot.end_prompt_mode = Some(self.turn_prompt_mode.lock().to_string());

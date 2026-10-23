@@ -33,6 +33,43 @@ fn install_real_permissions(actor: &mut SessionActor) {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn acp_permission_selector_transitions_are_session_scoped_and_gated() {
+    tokio::task::LocalSet::new().run_until(async {
+        let mut sessions = Vec::new();
+        for _ in 0..2 {
+            let (gateway_tx, _grx) = tokio::sync::mpsc::unbounded_channel();
+            let (persistence_tx, _prx) = tokio::sync::mpsc::unbounded_channel();
+            let mut actor = create_test_actor(0, 256_000, 85, gateway_tx, persistence_tx).await;
+            install_real_permissions(&mut actor);
+            sessions.push(Arc::new(actor));
+        }
+        let selected = &sessions[0];
+        let sibling = &sessions[1];
+        sibling.permissions.set_yolo_mode(true);
+        selected.apply_acp_permission_mode("yolo", true).await.unwrap();
+        assert!(selected.permissions.is_yolo_mode());
+        selected.apply_acp_permission_mode("auto", true).await.unwrap();
+        assert!(selected.permissions.is_auto_mode());
+        assert!(!selected.permissions.is_yolo_mode());
+        assert!(selected.permissions.has_llm_side_query());
+        assert!(sibling.permissions.is_yolo_mode());
+        assert!(!sibling.permissions.is_auto_mode());
+        selected.apply_acp_permission_mode("default", true).await.unwrap();
+        assert!(!selected.permissions.is_auto_mode());
+        assert!(!selected.permissions.is_yolo_mode());
+        assert!(!selected.permissions.has_llm_side_query());
+        assert!(selected.apply_acp_permission_mode("auto", false).await.is_err());
+        assert!(!selected.permissions.is_auto_mode());
+        assert!(selected.apply_acp_permission_mode("unknown", true).await.is_err());
+        selected.apply_acp_permission_mode("auto", true).await.unwrap();
+        selected.apply_acp_permission_mode("yolo", true).await.unwrap();
+        assert!(selected.permissions.is_yolo_mode());
+        assert!(!selected.permissions.is_auto_mode());
+        assert!(!selected.permissions.has_llm_side_query());
+    }).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn set_auto_mode_path_wires_live_side_query_via_session_actor() {
     let local = tokio::task::LocalSet::new();
     local
