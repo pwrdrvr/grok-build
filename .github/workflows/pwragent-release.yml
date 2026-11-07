@@ -490,8 +490,6 @@ jobs:
       - name: Package signed macOS distribution
         env:
           GROK_VERSION: ${{ needs.metadata.outputs.version }}
-          EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}
-          EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -503,12 +501,19 @@ jobs:
           tar -C stage-aarch64 -czf "$arm64_asset" .
           echo "ARM64_ASSET=$arm64_asset" >> "$GITHUB_ENV"
 
+      - name: Verify notarized macOS distributions
+        env:
+          EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}
+          EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
           for payload in stage stage-aarch64; do
             if [[ "$payload" == stage-aarch64 ]]; then
-              published_archive="$arm64_asset"
+              published_archive="$ARM64_ASSET"
               expected_sha256="$EXPECTED_ARM64_SHA256"
             else
-              published_archive="$asset"
+              published_archive="$ASSET"
               expected_sha256="$EXPECTED_BINARY_SHA256"
             fi
             published_contents="$RUNNER_TEMP/published-macos-$payload"

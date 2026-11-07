@@ -294,6 +294,7 @@ for fragment in (
 macos_codesign = step(macos_sign, "Sign and verify macOS binary")
 macos_notarize = step(macos_sign, "Notarize signed macOS binary")
 macos_package = step(macos_sign, "Package signed macOS distribution")
+macos_verify = step(macos_sign, "Verify notarized macOS distributions")
 macos_upload = step(macos_sign, "Upload signed macOS release asset")
 
 for fragment in (
@@ -331,9 +332,9 @@ for fragment in (
     "EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}",
     "EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}",
     'for payload in stage stage-aarch64; do',
-    'published_archive="$arm64_asset"',
+    'published_archive="$ARM64_ASSET"',
     'expected_sha256="$EXPECTED_ARM64_SHA256"',
-    'published_archive="$asset"',
+    'published_archive="$ASSET"',
     'expected_sha256="$EXPECTED_BINARY_SHA256"',
     'cmp "$payload/grok" "$published_contents/grok"',
     'test "$published_sha256" = "$expected_sha256"',
@@ -343,7 +344,7 @@ for fragment in (
     "-verify_arch arm64 x86_64",
     'test "$(lipo -archs "$published_contents/grok")" = arm64',
 ):
-    require(macos_package, fragment, "published macOS payload verification")
+    require(macos_verify, fragment, "published macOS payload verification")
 
 require_before(
     macos_sign,
@@ -360,8 +361,20 @@ require_before(
 require_before(
     macos_sign,
     "- name: Package signed macOS distribution",
+    "- name: Verify notarized macOS distributions",
+    "macOS packaging and verification order",
+)
+require_before(
+    macos_sign,
+    "- name: Verify notarized macOS distributions",
     "- name: Upload signed macOS release asset",
     "macOS package verification and upload order",
+)
+require_before(
+    macos_sign,
+    "- name: Verify notarized macOS distributions",
+    "- name: Upload signed Apple Silicon release asset",
+    "Apple Silicon package verification and upload order",
 )
 require(macos_upload, "name: release-macos-universal", "macOS release upload")
 require_count(workflow, "xcrun notarytool submit", 1, "release workflow")
