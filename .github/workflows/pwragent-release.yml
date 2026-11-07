@@ -313,7 +313,7 @@ jobs:
           retention-days: 7
 
   macos-sign:
-    name: Sign macOS universal and Apple Silicon binaries
+    name: Sign and notarize macOS universal and Apple Silicon binaries
     if: >-
       (github.event_name == 'push'
       && startsWith(github.ref, 'refs/tags/pwragent-v'))
@@ -323,7 +323,7 @@ jobs:
       - metadata
       - macos-universal
     runs-on: macos-15
-    timeout-minutes: 15
+    timeout-minutes: 45
     environment: apple-signing
     permissions:
       contents: read
@@ -351,6 +351,7 @@ jobs:
         run: tar -xzf .release-input/macos-release-signing-input.tgz
 
       - name: Sign and verify macOS binary
+        id: sign
         env:
           # Base64-encoded Developer ID Application .p12 and its export password.
           # Store both only on the apple-signing GitHub Environment.
@@ -408,7 +409,83 @@ jobs:
               lipo "$payload/grok" -verify_arch arm64 x86_64
               test "$(lipo -archs "$payload/grok" | wc -w | tr -d ' ')" = 2
             fi
+            binary_sha256="$(shasum -a 256 "$payload/grok" | awk '{print $1}')"
+            echo "$payload-sha256=$binary_sha256" >> "$GITHUB_OUTPUT"
           done
+
+      - name: Notarize signed macOS binary
+        env:
+          # Raw contents of an App Store Connect team API key, its Key ID,
+          # and Issuer ID. Store all three only on the apple-signing
+          # GitHub Environment. Individual API keys do not support notarytool.
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}
+          EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${APPLE_API_KEY_P8:?APPLE_API_KEY_P8 is required}"
+          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID is required}"
+          : "${APPLE_API_ISSUER_ID:?APPLE_API_ISSUER_ID is required}"
+          : "${EXPECTED_BINARY_SHA256:?signed binary digest is required}"
+          : "${EXPECTED_ARM64_SHA256:?signed arm64 binary digest is required}"
+
+          api_key="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID}.p8"
+          submission_archive="$RUNNER_TEMP/grok-notarization.zip"
+          submission_contents="$RUNNER_TEMP/grok-notarization-contents"
+          submission_result="$RUNNER_TEMP/grok-notarization-result.json"
+
+          cleanup() {
+            rm -f "$api_key" "$submission_archive" "$submission_result"
+            rm -rf "$submission_contents"
+          }
+          trap cleanup EXIT
+
+          umask 077
+          printf '%s' "$APPLE_API_KEY_P8" > "$api_key"
+          grep -q '^-----BEGIN PRIVATE KEY-----$' "$api_key"
+
+          # notarytool accepts ZIP, DMG, and PKG submissions, not a raw
+          # executable. This ZIP exists only for submission; the release keeps
+          # its established tar.gz format and the original signed bytes.
+          mkdir -p "$submission_contents/input" "$submission_contents/expanded"
+          cp -R stage stage-aarch64 "$submission_contents/input/"
+          ditto -c -k "$submission_contents/input" "$submission_archive"
+          ditto -x -k "$submission_archive" "$submission_contents/expanded"
+          for payload in stage stage-aarch64; do
+            cmp "$payload/grok" "$submission_contents/expanded/$payload/grok"
+          done
+
+          if ! xcrun notarytool submit "$submission_archive" \
+            --key "$api_key" \
+            --key-id "$APPLE_API_KEY_ID" \
+            --issuer "$APPLE_API_ISSUER_ID" \
+            --wait \
+            --timeout 30m \
+            --output-format json \
+            > "$submission_result"; then
+            echo "::error::Apple notary submission failed." >&2
+            exit 1
+          fi
+
+          submission_status="$(python3 -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["status"])' \
+            "$submission_result")"
+          submission_id="$(python3 -c \
+            'import json,sys; print(json.load(open(sys.argv[1]))["id"])' \
+            "$submission_result")"
+          echo "Apple notary submission ${submission_id}: ${submission_status}"
+          if [[ "$submission_status" != "Accepted" ]]; then
+            echo "::error::Apple notarization did not return Accepted." >&2
+            exit 1
+          fi
+
+          actual_sha256="$(shasum -a 256 stage/grok | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_BINARY_SHA256"
+          actual_arm64_sha256="$(shasum -a 256 stage-aarch64/grok | awk '{print $1}')"
+          test "$actual_arm64_sha256" = "$EXPECTED_ARM64_SHA256"
 
       - name: Package signed macOS distribution
         env:
@@ -423,6 +500,52 @@ jobs:
           arm64_asset="pwragent-grok-${GROK_VERSION}-macos-aarch64.tar.gz"
           tar -C stage-aarch64 -czf "$arm64_asset" .
           echo "ARM64_ASSET=$arm64_asset" >> "$GITHUB_ENV"
+
+      - name: Verify notarized macOS distributions
+        env:
+          EXPECTED_BINARY_SHA256: ${{ steps.sign.outputs.stage-sha256 }}
+          EXPECTED_ARM64_SHA256: ${{ steps.sign.outputs.stage-aarch64-sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for payload in stage stage-aarch64; do
+            if [[ "$payload" == stage-aarch64 ]]; then
+              published_archive="$ARM64_ASSET"
+              expected_sha256="$EXPECTED_ARM64_SHA256"
+            else
+              published_archive="$ASSET"
+              expected_sha256="$EXPECTED_BINARY_SHA256"
+            fi
+            published_contents="$RUNNER_TEMP/published-macos-$payload"
+            mkdir -p "$published_contents"
+            tar -xzf "$published_archive" -C "$published_contents"
+            cmp "$payload/grok" "$published_contents/grok"
+            published_sha256="$(shasum -a 256 "$published_contents/grok" | awk '{print $1}')"
+            test "$published_sha256" = "$expected_sha256"
+            codesign --verify --all-architectures --strict --verbose=2 \
+              "$published_contents/grok"
+            ticket_available=false
+            for attempt in 1 2 3 4 5 6; do
+              if codesign -vvvv -R="notarized" --check-notarization \
+                "$published_contents/grok"; then
+                ticket_available=true
+                break
+              fi
+              if [[ "$attempt" -lt 6 ]]; then
+                sleep 10
+              fi
+            done
+            if [[ "$ticket_available" != "true" ]]; then
+              echo "::error::Notarization ticket is unavailable for the published $payload binary." >&2
+              exit 1
+            fi
+            spctl --assess --type execute --verbose=4 "$published_contents/grok"
+            if [[ "$payload" == stage-aarch64 ]]; then
+              test "$(lipo -archs "$published_contents/grok")" = arm64
+            else
+              lipo "$published_contents/grok" -verify_arch arm64 x86_64
+            fi
+          done
 
       - name: Upload signed macOS release asset
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -729,4 +852,4 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --prerelease \
             --title "PwrAgent Grok ${VERSION}" \
-            --notes "Downstream Grok Build binaries for PwrAgent. Source commit: ${GITHUB_SHA}. macOS and Windows executables are signed by PwrDrvr LLC."
+            --notes "Downstream Grok Build binaries for PwrAgent. Source commit: ${GITHUB_SHA}. The macOS executable is signed by PwrDrvr LLC and Apple-notarized; the Windows executable is signed by PwrDrvr LLC."

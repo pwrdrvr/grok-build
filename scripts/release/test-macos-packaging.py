@@ -41,8 +41,8 @@ class PackagingTests(unittest.TestCase):
             (payload / 'PWRAGENT-BUILD.txt').write_text(f'platform=macos-{platform}\n')
             (payload / 'grok').chmod(0o755)
 
-    def run_step(self, name, success=True):
-        result = subprocess.run(['bash', '-c', script(name)], cwd=self.root, env=self.env,
+    def run_step(self, name, success=True, prelude=''):
+        result = subprocess.run(['bash', '-c', prelude + script(name)], cwd=self.root, env=self.env,
                                 capture_output=True, text=True)
         if success:
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -91,6 +91,31 @@ class PackagingTests(unittest.TestCase):
         changed = hashlib.sha256((inputs / archive.name).read_bytes()).hexdigest()
         (inputs / (archive.name + '.sha256')).write_text(f'{changed}  {archive.name}\n')
         self.run_step('Verify macOS signing input', success=False)
+
+    def test_notarized_archive_verification(self):
+        self.stage_fixtures()
+        self.run_step('Package signed macOS distribution')
+        self.env.update(
+            ASSET=f'pwragent-grok-{VERSION}-macos-universal.tar.gz',
+            ARM64_ASSET=f'pwragent-grok-{VERSION}-macos-aarch64.tar.gz',
+            EXPECTED_BINARY_SHA256=hashlib.sha256((self.root / 'stage/grok').read_bytes()).hexdigest(),
+            EXPECTED_ARM64_SHA256=hashlib.sha256((self.root / 'stage-aarch64/grok').read_bytes()).hexdigest(),
+        )
+        # Exercise real extraction, byte comparisons, and digest checks. Stub
+        # only Apple's policy tools so ordinary CI needs no signed fixtures
+        # or online notarization ticket lookup.
+        prelude = '''
+codesign() { test "${FAIL_CODESIGN:-0}" = 0; }
+spctl() { return 0; }
+lipo() { if [[ "$1" == -archs ]]; then echo arm64; fi; }
+'''
+        self.run_step('Verify notarized macOS distributions', prelude=prelude)
+        recorded = self.env['EXPECTED_ARM64_SHA256']
+        self.env['EXPECTED_ARM64_SHA256'] = '0' * 64
+        self.run_step('Verify notarized macOS distributions', success=False, prelude=prelude)
+        self.env['EXPECTED_ARM64_SHA256'] = recorded
+        self.env['FAIL_CODESIGN'] = '1'
+        self.run_step('Verify notarized macOS distributions', success=False, prelude=prelude)
 
     def test_exact_release_asset_set(self):
         dist = self.root / 'dist'
